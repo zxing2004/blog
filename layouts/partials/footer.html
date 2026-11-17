@@ -1,0 +1,18 @@
+<footer class="site-footer">
+  <div class="container footer-inner">
+    <div class="footer-left">
+      <span>&copy; {{ .Site.Params.sinceYear | default (now.Year) }} {{ .Site.Params.author }} · {{ .Site.Title }}</span>
+      <span class="sep">·</span>
+      <span>由 <a href="https://gohugo.io/" target="_blank" rel="noopener">Hugo</a> 构建</span>
+    </div>
+    <div class="footer-social">
+      {{- with .Site.Params.social.github -}}
+        <a href="{{ . }}" target="_blank" rel="noopener" title="GitHub" aria-label="GitHub">GitHub</a>
+      {{- end -}}
+      {{- with .Site.Params.social.email -}}
+        <a href="{{ . }}" title="邮箱" aria-label="邮箱">Email</a>
+      {{- end -}}
+      <a href="{{ "index.xml" | relURL }}" title="RSS" aria-label="RSS">RSS</a>
+    </div>
+  </div>
+</footer>

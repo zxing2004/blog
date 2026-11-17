@@ -1,0 +1,32 @@
+{{ define "main" }}
+  <header class="page-header">
+    <h1 class="page-title">{{ .Title }}</h1>
+    {{ with .Description }}<p class="page-desc">{{ . }}</p>{{ end }}
+    {{- if not .IsHome -}}
+      <p class="page-count">共 {{ len .Pages }} 篇</p>
+    {{- end -}}
+  </header>
+
+  <section class="post-list">
+    {{ $paginator := .Paginate .Pages }}
+    {{ range $paginator.Pages }}
+      {{ partial "post-card.html" . }}
+    {{ end }}
+
+    {{- if $paginator.HasPagination -}}
+      <nav class="pagination" aria-label="分页">
+        {{- with $paginator.Prev -}}
+          <a class="page-btn" href="{{ .URL }}">← 上一页</a>
+        {{- else -}}
+          <span class="page-btn disabled">← 上一页</span>
+        {{- end -}}
+        <span class="page-info">第 {{ $paginator.PageNumber }} / {{ $paginator.TotalPages }} 页</span>
+        {{- with $paginator.Next -}}
+          <a class="page-btn" href="{{ .URL }}">下一页 →</a>
+        {{- else -}}
+          <span class="page-btn disabled">下一页 →</span>
+        {{- end -}}
+      </nav>
+    {{- end -}}
+  </section>
+{{ end }}

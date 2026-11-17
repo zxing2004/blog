@@ -1,0 +1,44 @@
+{{ define "main" }}
+  <section class="hero">
+    <h1 class="hero-title">你好，我是 {{ .Site.Params.author }} <span class="wave">👋</span></h1>
+    <p class="hero-subtitle">{{ .Site.Params.description }}</p>
+    <div class="hero-links">
+      {{- with .Site.Params.social.github -}}
+        <a href="{{ . }}" target="_blank" rel="noopener" class="hero-link">GitHub</a>
+      {{- end -}}
+      <a href="{{ "posts/" | relURL }}" class="hero-link hero-link-primary">浏览文章</a>
+    </div>
+  </section>
+
+  <section class="post-list">
+    <div class="section-heading">
+      <h2>最新文章</h2>
+      <a href="{{ "posts/" | relURL }}" class="section-more">全部文章 →</a>
+    </div>
+
+    {{ $paginator := .Paginate (where .Site.RegularPages "Type" "posts") }}
+    {{- if $paginator.Pages -}}
+      {{ range $paginator.Pages }}
+        {{ partial "post-card.html" . }}
+      {{ end }}
+
+      {{- if $paginator.HasPagination -}}
+        <nav class="pagination" aria-label="分页">
+          {{- with $paginator.Prev -}}
+            <a class="page-btn" href="{{ .URL }}">← 上一页</a>
+          {{- else -}}
+            <span class="page-btn disabled">← 上一页</span>
+          {{- end -}}
+          <span class="page-info">第 {{ $paginator.PageNumber }} / {{ $paginator.TotalPages }} 页</span>
+          {{- with $paginator.Next -}}
+            <a class="page-btn" href="{{ .URL }}">下一页 →</a>
+          {{- else -}}
+            <span class="page-btn disabled">下一页 →</span>
+          {{- end -}}
+        </nav>
+      {{- end -}}
+    {{- else -}}
+      <p class="empty-state">还没有文章。通过 <code>hugo new posts/我的第一篇文章.md</code> 创建第一篇吧。</p>
+    {{- end -}}
+  </section>
+{{ end }}

@@ -1,0 +1,90 @@
+# ============================================================
+# Hugo 站点配置
+# 部署前请先修改下方 baseURL 为你的 GitHub Pages 地址
+# 例如：https://ricead.github.io/blog/
+# ============================================================
+
+baseURL   = 'https://YOUR_USERNAME.github.io/blog/'
+languageCode = 'zh-CN'
+title     = 'Rice 的技术博客'
+theme     = '' # 使用站点自带的 layouts 主题，无需外部主题
+
+# 生成 robots.txt / sitemap.xml，利于 SEO
+enableRobotsTXT = true
+
+# 文章 URL 结构：/posts/文章名/
+[permalinks]
+  posts = '/posts/:slug/'
+
+# 站点参数（模板中通过 .Site.Params.xxx 调用）
+[params]
+  description   = '记录技术学习、工程实践与思考的个人博客。'
+  author        = 'Rice'
+  authorEmail   = 'ricead@qq.com'
+  # 首页每页显示文章数
+  paginate      = 6
+  # 文章列表摘要字数
+  summaryLength = 120
+  # 是否显示文章目录（TOC）
+  showTOC       = true
+  # 是否显示阅读时间
+  showReadingTime = true
+  # 评论系统留空则不显示（可选：giscus / disqus）
+  comments      = false
+  # 站点建立年份（页脚用）
+  sinceYear     = 2026
+
+  # 社交链接（留空则不显示对应图标）
+  [params.social]
+    github    = 'https://github.com/YOUR_USERNAME'
+    email     = 'mailto:ricead@qq.com'
+    rss       = '' # 留空则使用站点默认 /index.xml
+
+# 代码高亮配置（Hugo 内置 Chroma，无需 JS）
+[markup]
+  [markup.highlight]
+    style        = 'github'       # 代码主题：github / dracula / monokai 等
+    noClasses    = true           # true = 生成 class，由 chroma.css 控制，支持深浅主题切换
+    lineNos      = true           # 显示行号
+    lineNumbersInTable = true
+    tabWidth     = 2
+  [markup.tableOfContents]
+    startLevel = 2
+    endLevel   = 3
+    ordered    = false
+  [markup.goldmark.renderer]
+    unsafe = true # 允许在 Markdown 中使用原始 HTML
+
+# 分类法：标签与分类
+[taxonomies]
+  tag      = 'tags'
+  category = 'categories'
+
+# 输出格式：额外生成 RSS 与 JSON feed
+[outputs]
+  home = ['HTML', 'RSS', 'JSON']
+
+# 菜单配置
+[[menu.main]]
+  name       = '首页'
+  url        = '/'
+  weight     = 10
+  identifier = 'home'
+
+[[menu.main]]
+  name       = '文章'
+  url        = '/posts/'
+  weight     = 20
+  identifier = 'posts'
+
+[[menu.main]]
+  name       = '标签'
+  url        = '/tags/'
+  weight     = 30
+  identifier = 'tags'
+
+[[menu.main]]
+  name       = '关于'
+  url        = '/about/'
+  weight     = 40
+  identifier = 'about'

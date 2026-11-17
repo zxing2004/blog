@@ -1,0 +1,14 @@
+{{ define "main" }}
+  <header class="page-header">
+    <h1 class="page-title">{{ .Title }}</h1>
+    <p class="page-desc">按标签浏览全部文章</p>
+  </header>
+
+  <section class="term-cloud">
+    {{ range .Data.Terms.Alphabetical }}
+      <a class="term-chip" href="{{ .Page.RelPermalink }}">
+        {{ .Page.Title }} <span class="term-count">{{ .Count }}</span>
+      </a>
+    {{ end }}
+  </section>
+{{ end }}

@@ -1,0 +1,22 @@
+<article class="post-card">
+  <div class="post-card-meta">
+    <time datetime="{{ .Date.Format "2006-01-02" }}">{{ .Date.Format "2006-01-02" }}</time>
+    {{- if .Site.Params.showReadingTime -}}
+      <span class="meta-dot">·</span>
+      <span>{{ .ReadingTime }} 分钟阅读</span>
+    {{- end -}}
+  </div>
+  <h2 class="post-card-title">
+    <a href="{{ .RelPermalink }}">{{ .Title }}</a>
+    {{- if .Draft }} <span class="badge-draft">草稿</span>{{ end -}}
+  </h2>
+  <p class="post-card-summary">{{ .Summary | plainify | truncate 140 }}</p>
+  <div class="post-card-footer">
+    <div class="tags">
+      {{- range .Params.tags -}}
+        <a class="tag" href="{{ relURL (printf "/tags/%s/" (. | urlquery)) }}">#{{ . }}</a>
+      {{- end -}}
+    </div>
+    <a class="read-more" href="{{ .RelPermalink }}">阅读全文 →</a>
+  </div>
+</article>
