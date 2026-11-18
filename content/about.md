@@ -25,6 +25,6 @@ description: "了解这个博客背后的故事，以及如何联系我。"
 ## 联系方式
 
 - **邮箱**：ricead@qq.com
-- **GitHub**：[github.com/YOUR_USERNAME](https://github.com/YOUR_USERNAME)
+- **GitHub**：[github.com/zxing2004](https://github.com/zxing2004)
 
 > 提示：以上链接中的 `YOUR_USERNAME` 请在正式发布前替换为你的 GitHub 用户名。

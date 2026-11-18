@@ -4,7 +4,7 @@
 # 例如：https://ricead.github.io/blog/
 # ============================================================
 
-baseURL   = 'https://YOUR_USERNAME.github.io/blog/'
+baseURL   = 'https://zxing2004.github.io/blog/'
 languageCode = 'zh-CN'
 title     = 'Rice 的技术博客'
 theme     = '' # 使用站点自带的 layouts 主题，无需外部主题
@@ -36,7 +36,7 @@ enableRobotsTXT = true
 
   # 社交链接（留空则不显示对应图标）
   [params.social]
-    github    = 'https://github.com/YOUR_USERNAME'
+    github    = 'https://github.com/zxing2004'
     email     = 'mailto:ricead@qq.com'
     rss       = '' # 留空则使用站点默认 /index.xml
 
