@@ -1,5 +1,6 @@
 ---
 title: "模型路由实战：按任务分层调度 Sol/Terra/Luna 类模型"
+slug: "model-routing-strategy"
 date: 2026-07-16
 draft: false
 description: "当同一平台提供旗舰、均衡、廉价多档模型，如何把每个请求送到性价比最高的那一档？本文讲清规则、分类器与级联三类路由策略，并给出可运行的路由器与成本统计实现。"

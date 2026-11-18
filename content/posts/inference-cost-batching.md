@@ -1,5 +1,6 @@
 ---
 title: "推理服务的成本账本：Prefill/Decode 分离与 Continuous Batching"
+slug: "inference-cost-batching"
 date: 2026-08-25
 draft: false
 description: "Token 经济爆发之后，推理成本成了硬指标。本文从 prefill 与 decode 两种截然不同的瓶颈出发，讲透 Continuous Batching 与 PD 分离为何能提升吞吐，并给出成本核算与指标监控的可运行示例。"

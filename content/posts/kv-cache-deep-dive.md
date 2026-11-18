@@ -1,5 +1,6 @@
 ---
 title: "KV Cache 到底占了多少显存：从 MQA/GQA 到 FP4 量化"
+slug: "kv-cache-deep-dive"
 date: 2026-09-08
 draft: false
 description: "长上下文为何这么吃显存？答案藏在 KV Cache 里。本文从零推导 KV Cache 显存公式，讲清 MHA→MQA→GQA 的演进、FP8/FP4 量化与跨层共享，并给出可复用的显存计算工具。"
