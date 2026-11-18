@@ -9,7 +9,7 @@
       {{- range .Site.Menus.main -}}
         <a href="{{ .URL | relURL }}"{{ if $.IsMenuCurrent "main" . }} class="active"{{ end }}>{{ .Name }}</a>
       {{- end -}}
-      <a href="{{ "index.xml" | relURL }}" class="nav-rss" title="RSS 订阅" aria-label="RSS 订阅">RSS</a>
+      <a href="{{ "index.xml" | relURL }}" class="nav-rss" title="订阅更新" aria-label="订阅更新">订阅</a>
       <button id="theme-toggle" class="theme-toggle" type="button" title="切换主题" aria-label="切换深浅主题">
         <span class="icon-sun" aria-hidden="true">☀</span>
         <span class="icon-moon" aria-hidden="true">☾</span>

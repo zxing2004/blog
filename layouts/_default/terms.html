@@ -1,7 +1,7 @@
 {{ define "main" }}
   <header class="page-header">
     <h1 class="page-title">{{ .Title }}</h1>
-    <p class="page-desc">按标签浏览全部文章</p>
+    <p class="page-desc">按{{ if eq .Title "标签" }}标签{{ else if eq .Title "分类" }}分类{{ else }}{{ .Title }}{{ end }}浏览全部文章</p>
   </header>
 
   <section class="term-cloud">

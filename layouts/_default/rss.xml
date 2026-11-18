@@ -1,0 +1,47 @@
+{{- $site := .Site -}}
+{{- $pctx := . -}}
+{{- if .IsHome -}}{{- $pctx = .Site -}}{{- end -}}
+{{- $pages := slice -}}
+{{- if or $.IsHome $.IsSection -}}
+  {{- $pages = $pctx.RegularPages -}}
+{{- else -}}
+  {{- $pages = $pctx.Pages -}}
+{{- end -}}
+{{- $limit := $site.Config.Services.RSS.Limit -}}
+{{- if ge $limit 1 -}}
+  {{- $pages = $pages | first $limit -}}
+{{- end -}}
+{{- printf "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\"?>" | safeHTML }}
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>{{ if eq .Title $site.Title }}{{ $site.Title }}{{ else }}{{ with .Title }}{{ . }} · {{ end }}{{ $site.Title }}{{ end }}</title>
+    <link>{{ .Permalink }}</link>
+    <description>{{ if eq .Title $site.Title }}{{ $site.Title }}的最新文章{{ else }}{{ .Title }}栏目的最新文章，来自{{ $site.Title }}{{ end }}</description>
+    <generator>Hugo</generator>
+    <language>{{ $site.LanguageCode }}</language>
+    {{- with $site.Params.author }}
+    <managingEditor>{{ . }}{{ with $site.Params.authorEmail }} ({{ . }}){{ end }}</managingEditor>
+    {{- end }}
+    {{- with $site.Copyright }}
+    <copyright>{{ . }}</copyright>
+    {{- end }}
+    {{- if not .Date.IsZero }}
+    <lastBuildDate>{{ .Date.Format "Mon, 02 Jan 2006 15:04:05 -0700" | safeHTML }}</lastBuildDate>
+    {{- end }}
+    {{- with .OutputFormats.Get "RSS" }}
+    {{ printf "<atom:link href=%q rel=\"self\" type=%q />" .Permalink .MediaType | safeHTML }}
+    {{- end }}
+    {{- range $pages }}
+    <item>
+      <title>{{ .Title }}</title>
+      <link>{{ .Permalink }}</link>
+      <pubDate>{{ .Date.Format "Mon, 02 Jan 2006 15:04:05 -0700" | safeHTML }}</pubDate>
+      {{- with $site.Params.authorEmail }}
+      <author>{{ . }}</author>
+      {{- end }}
+      <guid>{{ .Permalink }}</guid>
+      <description>{{ with .Description }}{{ . }}{{ else }}{{ .Summary }}{{ end }}</description>
+    </item>
+    {{- end }}
+  </channel>
+</rss>
