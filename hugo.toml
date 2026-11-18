@@ -7,7 +7,8 @@
 baseURL   = 'https://zxing2004.github.io/blog/'
 languageCode = 'zh-CN'
 title     = 'Rice 的技术博客'
-theme     = '' # 使用站点自带的 layouts 主题，无需外部主题
+# 注意：本站使用自带的 layouts/ 主题，不要设置 theme 配置项。
+# 若写 theme = ''，Hugo 0.128 会尝试加载名为 "" 的主题模块而报错。
 
 # 生成 robots.txt / sitemap.xml，利于 SEO
 enableRobotsTXT = true
