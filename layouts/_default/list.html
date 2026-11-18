@@ -13,7 +13,7 @@
       {{ partial "post-card.html" . }}
     {{ end }}
 
-    {{- if $paginator.HasPagination -}}
+    {{- if gt $paginator.TotalPages 1 -}}
       <nav class="pagination" aria-label="分页">
         {{- with $paginator.Prev -}}
           <a class="page-btn" href="{{ .URL }}">← 上一页</a>

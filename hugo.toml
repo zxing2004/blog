@@ -61,9 +61,9 @@ enableRobotsTXT = true
   tag      = 'tags'
   category = 'categories'
 
-# 输出格式：额外生成 RSS 与 JSON feed
+# 输出格式：额外生成 RSS feed（JSON feed 需额外模板，本站不需要）
 [outputs]
-  home = ['HTML', 'RSS', 'JSON']
+  home = ['HTML', 'RSS']
 
 # 菜单配置
 [[menu.main]]
