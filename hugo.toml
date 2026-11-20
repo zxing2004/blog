@@ -4,7 +4,7 @@
 # 例如：https://ricead.github.io/blog/
 # ============================================================
 
-baseURL   = 'https://zxing2004.github.io/blog/'
+baseURL   = 'https://blog.riceknow.com'
 languageCode = 'zh-CN'
 title     = 'Rice 的技术博客'
 # 注意：本站使用自带的 layouts/ 主题，不要设置 theme 配置项。
