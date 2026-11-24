@@ -6,7 +6,7 @@
 
 baseURL   = 'https://blog.riceknow.com'
 languageCode = 'zh-CN'
-title     = 'Rice 的技术博客'
+title     = '米Know的技术博客'
 # 注意：本站使用自带的 layouts/ 主题，不要设置 theme 配置项。
 # 若写 theme = ''，Hugo 0.128 会尝试加载名为 "" 的主题模块而报错。
 
@@ -20,7 +20,7 @@ enableRobotsTXT = true
 # 站点参数（模板中通过 .Site.Params.xxx 调用）
 [params]
   description   = '记录技术学习、工程实践与思考的个人博客。'
-  author        = 'Rice'
+  author        = '米喽'
   authorEmail   = 'ricead@qq.com'
   # 首页每页显示文章数
   paginate      = 6
