@@ -1,9 +1,9 @@
 ---
-title: "Docker 镜像瘦身实战：从 1.2G 到 80M"
+title: "Docker 镜像瘦身实战：从 1.2G 到 15M"
 slug: "docker-image-slimming"
 date: 2026-03-19
 draft: false
-description: "以 Go 与 Node 应用为例，讲透镜像分层、多阶段构建与基础镜像选型，把一个 1.2G 的镜像压到 80M 的实战过程。"
+description: "讲透镜像分层、多阶段构建与基础镜像选型，把一个 1.2G 的 Go 镜像压到 15M；Node + Nginx 那套路线大约落在 80M。"
 tags: ["Docker", "容器", "多阶段构建", "CI/CD"]
 categories: ["运维部署"]
 ---
@@ -73,7 +73,8 @@ Node 应用同样适用多阶段。前端构建产物是静态资源，运行时
 FROM node:20-alpine AS build
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --omit=dev
+# 构建阶段必须装 devDependencies：vite/webpack/tsc 全在里面，--omit=dev 会让 build 直接失败
+RUN npm ci
 COPY . .
 RUN npm run build
 
@@ -81,6 +82,8 @@ FROM nginx:alpine
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 ```
+
+注意这里**不能**写 `npm ci --omit=dev`：`npm run build` 用的构建工具都在 `devDependencies` 里，省掉它们第一步就报"找不到命令"。而运行阶段压根不需要 `node_modules`——只把 `dist/` 拷进 Nginx，所以"构建装全量、运行零依赖"才是正确姿势。这一套下来最终镜像约 80M（`nginx:alpine` 自身约 50M，加上静态资源），比 Go 的 15M 大，差距全在基础镜像上。
 
 ## 别忘了 .dockerignore
 
@@ -104,4 +107,4 @@ distroless/scratch 没有 shell，`docker exec` 进不去。排查时可临时�
 
 ## 小结
 
-镜像瘦身的路径很清晰：先确认分层原理，把清理动作合并进同一层；再用多阶段构建把"编译期"和"运行期"彻底分离；接着按语言选择合适的极小基础镜像；最后用 `.dockerignore` 收紧构建上下文。从 1.2G 到 80M 不是魔法，而是每一次都只把运行真正需要的东西装进镜像。更快的发布、更小的攻击面，就是这点 disciplined 的回报。
+镜像瘦身的路径很清晰：先确认分层原理，把清理动作合并进同一层；再用多阶段构建把"编译期"和"运行期"彻底分离；接着按语言选择合适的极小基础镜像；最后用 `.dockerignore` 收紧构建上下文。从 1.2G 到 15M 不是魔法，而是每一次都只把运行真正需要的东西装进镜像——Node 那套停在 80M 也是一个道理，只是 Nginx 这个基础镜像本身就有 50M 打底。更快的发布、更小的攻击面，就是这份克制的回报。

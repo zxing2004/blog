@@ -21,7 +21,7 @@ categories: ["运维部署"]
 ```text
 $ tail -n 3 /data/logs/auth-gateway/app.log
 2026-03-06 14:22:07.331 ERROR [auth] verify failed: dial tcp: lookup auth.internal on 10.0.0.2:53: read udp 192.168.1.10:41234->10.0.0.2:53: i/o timeout
-2026-03-06 14:22:09.884 ERROR [auth] verify failed: lookup auth.internal: no such host
+2026-03-06 14:22:08.902 ERROR [auth] upstream dial failed: dial tcp 10.12.3.41:8443: i/o timeout
 2026-03-06 14:22:10.102 WARN  [auth] retry succeeded on 2nd attempt
 $ dig @10.0.0.2 auth.internal +short
 10.12.3.41
@@ -41,7 +41,7 @@ $ tcpdump -i any -nn port 53 -c 6
 14:23:12.204188 IP 192.168.1.10:41234 > 10.0.0.2.53: 38211+ A? auth.internal. (31)
 ```
 
-连续几个查询只有请求、没有回应，客户端在超时后重发。包确实从机器上发出去了，DNS 服务端也说没收到——问题要么在中间链路，要么在本机内核的丢弃逻辑里。注意报错里"no such host"和"i/o timeout"是两种：前者是收到了 `SERVFAIL` 或 `REFUSED`，后者是干脆没回应。两种混在一起，说明不是 DNS 服务端在拒绝，而是**一部分包根本没走到**。
+连续几个查询只有请求、没有回应，客户端在超时后重发。包确实从机器上发出去了，DNS 服务端也查不到对应查询记录——问题要么在中间链路，要么在本机内核的丢弃逻辑里。而且报错里两种超时并存：查 DNS 的 UDP 超时，和连上游 `10.12.3.41:8443` 的 TCP 超时。两个协议、同一个症状，指向的往往不是某个具体服务，而是两者共用的那个出口。
 
 我们这台机器装了 Docker，iptables 有 NAT 规则，意味着它会走连接跟踪。于是去看一个平时没人看的地方——内核自己记录的网络统计：
 
@@ -60,7 +60,7 @@ entries  searched found new invalid ignore delete delete_list insert insert_fail
 
 `count` 已经把 `max` 顶穿了（内核允许极小的溢出余量），`dmesg` 里 `table full, dropping packet` 在刷。连接跟踪表满了，内核对**新连接的第一个包**直接丢弃——不回报错、不返回码，就是静默消失。
 
-这也解释了两类报错的来源：UDP DNS 查询的新包被丢，表现为 `i/o timeout`；TCP 新建连接（上游调用方的请求）的 SYN 被丢，表现为连接超时，客户端重试一次可能刚好赶上表里有空隙，所以"重试就好"。手动 `dig` 成功，纯粹是因为它执行的那一瞬间刚好撞上了空闲窗口——偶发故障里，"我这儿测试正常"是最不可靠的证据。
+这也解释了两类报错的来源，其实只有一个：新连接的第一个包被丢了。UDP 的 DNS 查询没有重传，丢了就干等超时，报 `i/o timeout`；TCP 连上游时的 SYN 被丢，同样卡在握手阶段，报的也是一句 `i/o timeout`。客户端重试一次可能刚好赶上表里有空隙，所以"重试就好"。手动 `dig` 成功，纯粹是因为它执行的那一瞬间刚好撞上了空闲窗口——偶发故障里，"我这儿测试正常"是最不可靠的证据。
 
 ## 处理过程
 
@@ -121,7 +121,7 @@ $ sysctl -w net.netfilter.nf_conntrack_tcp_timeout_syn_sent=30
 
 `nf_conntrack` 是 netfilter 用来记录每条连接状态的内核结构，条目数由 `nf_conntrack_max` 控制。它有个特点：连接关闭后条目不会立刻消失，要等超时——`ESTABLISHED` 默认五天，`TIME_WAIT` 默认两分钟，`SYN_SENT` 默认两分钟。大量短连接在短时间内反复创建，表项来不及回收，就会迅速逼近上限。
 
-一旦表满，内核的处理是**直接丢弃新连接的首包**，而且不产生任何应用层可见的错误码。于是同一个根因在不同协议上表现为不同症状：DNS 是 UDP，没有重传保障，表现成解析超时或 `no such host`；TCP 的 SYN 被丢，表现成连接超时。这也是为什么我们一开始被"DNS 故障"这个表象带偏——它只是最先喊疼的那个。
+一旦表满，内核的处理是**直接丢弃新连接的首包**，而且不产生任何应用层可见的错误码。于是同一个根因在不同协议上表现出几乎一样的症状：DNS 走 UDP，没有重传，丢了就是解析超时；TCP 的 SYN 被丢，就是握手超时。两者在日志里都只是干巴巴一句 `i/o timeout`，而 DNS 排在最前面，所以最先喊疼的是它——这也是我们一开始被"DNS 故障"这个表象带偏的原因。
 
 三个因素叠加才酿成这次事故：某个上游服务短连接激增是导火索；`nf_conntrack_max` 沿用默认值、和这台机器的实际连接量不匹配是放大器；完全没有对 conntrack 使用量做监控和告警，是真正的盲区。前两个是技术债，最后一个是管理债。
 

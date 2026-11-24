@@ -27,10 +27,28 @@ OOM 不是一种病，至少要先分清发生在哪一层：
 
 ## 留存现场：把证据先抓下来
 
-容器被杀前的关键证据要提前布好。JVM 侧加参数自动 dump：
+容器被杀前的关键证据要提前布好，但这里有个前提特别容易搞错：**`-XX:+HeapDumpOnOutOfMemoryError` 只在 JVM 自己抛出 `OutOfMemoryError` 时才会写 dump**。如果容器是被 cgroup 限额直接 SIGKILL 的，JVM 连抛异常的机会都没有，`.hprof` 根本不会出现。本次事故就是这样——翻遍 `/dumps` 只有一个空目录，一开始还以为是挂载路径写错了。
+
+那次真正拿到证据靠的是另外三条线：
 
 ```bash
-# JVM 发生 OOM 时自动写出堆转储，并打印 GC 日志
+# 1. 确认是 cgroup 层杀的（cgroup v2）
+cat /sys/fs/cgroup/memory.events        # 关注 oom_kill 计数
+# cgroup v1 的路径不同：/sys/fs/cgroup/memory/memory.oom_control，看 oom_kill 字段
+
+# 2. 内核日志里的现场
+dmesg -T | grep -i "killed process"
+
+# 3. 容器内存曲线：RSS 单调爬升、重启后从零再来，是泄漏而不是峰值抖动
+kubectl top pod -n pay --containers
+```
+
+有这三条就能定性质：**不是堆内 OOM，是容器内存超限**。接下来在预发用同样的流量复现，把 `-Xmx` 调到明显小于容器 limit（让 JVM 先于 cgroup 触发 OOM），或者直接 `jcmd <pid> GC.heap_dump /dumps/on-demand.hprof` 主动抓一份——有了堆才能进 MAT 找对象。
+
+JVM 侧那两个参数仍然要加，只是得清楚它兜住的是"堆内 OOM"这一类：
+
+```bash
+# 堆内存耗尽时自动 dump；它拦不住 cgroup 的 SIGKILL
 JAVA_OPTS="-XX:+HeapDumpOnOutOfMemoryError \
   -XX:HeapDumpPath=/dumps/heapdump.hprof \
   -Xlog:gc*:file=/logs/gc.log:time,uptime,level,tags"
@@ -44,10 +62,6 @@ go tool pprof -http=:0 http://localhost:6060/debug/pprof/heap
 
 # 对比两个时间点的堆，观察增长对象
 go tool pprof -base before.pb.gz http://localhost:6060/debug/pprof/heap
-
-# 内核 OOM 证据：查 cgroup 内存事件与内核日志
-cat /sys/fs/cgroup/memory.events        # oom_kill 计数
-dmesg -T | grep -i "killed process"
 ```
 
 还要注意 cgroup 的统计不能完全等同于 JVM 堆：JVM 的堆外内存（直接缓冲、线程栈、Metaspace、JIT 代码缓存）都算进容器 limit 里。设 limit 时必须预留这部分空间，否则 `-Xmx=1G` + `limit=1G` 必然被杀。
@@ -58,7 +72,7 @@ dmesg -T | grep -i "killed process"
 
 Go 侧用 `go tool pprof` 的 `top`、`list`、`web` 命令定位分配热点，配合 `inuse_space`（当前占用）与 `alloc_space`（累计分配）区分"还没释放"和"分配太猛"。
 
-本次事故的结论是：新版本引入的一个本地缓存用了 `ConcurrentHashMap` 却没设容量上限，key 是订单号，随流量单调增长。堆 dump 里该类占了 70% 的 retained heap，根因确认。
+本次事故的结论是：新版本引入的一个本地缓存用了 `ConcurrentHashMap` 却没设容量上限，key 是订单号，随流量单调增长。预发复现后主动 dump 的那份堆快照里，这个类占了 70% 的 retained heap，根因确认。回头看，`memory.events` 里的 oom_kill 计数和那条从不回落的 RSS 曲线，其实早就把结论写清楚了——堆转储不过是把"哪个对象"这一格补上。
 
 ## cgroup 与运行时参数调优
 
@@ -92,9 +106,10 @@ resources:
 
 ## 时间线
 - 02:14 新版本发布
-- 02:31 首次 OOMKilled，Pod 重启
-- 02:50 值班介入，误判为内存不足，调大 limit
-- 03:02 回滚版本，恢复
+- 02:18 首次 OOMKilled，Pod 重启；此后每 3–4 分钟一轮
+- 02:34 值班介入，误判为内存不足，limit 从 1G 调到 2G，重启周期拉长到 7–8 分钟
+- 02:52 判断为泄漏而非容量不足，决定回滚
+- 03:02 旧版本全量，RSS 曲线回落
 
 ## 根因
 - 直接原因：无界缓存导致堆内存单调增长

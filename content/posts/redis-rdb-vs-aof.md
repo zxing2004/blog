@@ -33,7 +33,9 @@ AOF 的写入粒度由 `appendfsync` 控制：`always`（每条命令都 fsync�
 
 ## 混合持久化
 
-Redis 4.0 引入了混合持久化，兼顾 RDB 的快速恢复和 AOF 的低数据丢失。开启后，AOF 文件由两部分组成：文件开头是 RDB 格式的全量快照，之后是增量的 AOF 命令。rewrite 时，子进程先把当前数据以 RDB 格式写入，再把 rewrite 期间的增量命令以 AOF 格式追加。这样重启时先快速加载 RDB，再重放少量增量命令，恢复速度和安全性兼得。混合持久化由配置项 `aof-use-rdb-preamble yes` 开启（Redis 4.0 以上）。需要注意，混合模式下 AOF 文件前半段是二进制 RDB、后半段是文本命令，直接查看或人工编辑文件时要留意这种混合格式。
+Redis 4.0 引入了混合持久化，兼顾 RDB 的快速恢复和 AOF 的低数据丢失。开启后，AOF 文件由两部分组成：文件开头是 RDB 格式的全量快照，之后是增量的 AOF 命令。rewrite 时，子进程先把当前数据以 RDB 格式写入，再把 rewrite 期间的增量命令以 AOF 格式追加。这样重启时先快速加载 RDB，再重放少量增量命令，恢复速度和安全性兼得。混合持久化由配置项 `aof-use-rdb-preamble yes` 开启（Redis 4.0–6.x）。
+
+这里有个版本分水岭必须说清楚：**从 Redis 7.0 起，AOF 改成了 multi-part 结构**，不再是单个 `appendonly.aof`，而是一个 `appendonlydir/` 目录，里面按 `<basename>.<序号>.base.rdb` + `<basename>.<序号>.incr.aof` 命名，外加一个 `manifest` 文件记录当前有效的文件集合；rewrite 就是生成新的 base 并把旧的标记为历史。`aof-use-rdb-preamble` 在这个版本已经废弃（base 文件天生就是 RDB 格式），配了也只会被忽略。所以按 6.x 及更早的路径去 `ls appendonly.aof`，在 7.x 上只会得到 "No such file"。
 
 ## fork 与 COW 的内存开销
 
@@ -52,13 +54,13 @@ dbfilename dump.rdb
 dir /var/lib/redis
 stop-writes-on-bgsave-error yes   # 快照失败时停止写入，及时暴露问题
 
-# ---------- AOF 配置 ----------
+# ---------- AOF 配置（6.x 及更早口径）----------
 appendonly yes
 appendfilename "appendonly.aof"
 appendfsync everysec
 auto-aof-rewrite-percentage 100
 auto-aof-rewrite-min-size 64mb
-aof-use-rdb-preamble yes          # 开启混合持久化
+aof-use-rdb-preamble yes          # 混合持久化；Redis 7.0+ 已废弃，配了也不生效
 ```
 
 修改配置后重启，用以下命令验证持久化状态：
@@ -74,8 +76,10 @@ redis-cli BGREWRITEAOF
 # 查看最近一次持久化状态
 redis-cli LASTSAVE
 
-# 检查 AOF 文件
-ls -lh /var/lib/redis/appendonly.aof
+# 检查 AOF 文件（按版本二选一）
+redis-cli INFO server | grep redis_version
+ls -lh /var/lib/redis/appendonly.aof          # 6.x 及更早：单个文件
+ls -lh /var/lib/redis/appendonlydir/          # 7.x：目录 + manifest + base/incr 分片
 ```
 
 ## 踩坑与最佳实践

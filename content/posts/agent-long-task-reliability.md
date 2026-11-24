@@ -9,7 +9,7 @@ categories: ["后端与架构"]
 
 ## 热点引入：当 Agent 开始「上长班」
 
-2026 年 9 月，Cognition 发布 SWE-2 异步软件工程模型，明确面向长程、异步的软件工程任务——不再是「一问一答」，而是把需求丢给它，几个小时后交付一个可用的分支。这类任务的共同特征是：步骤数以百计、跨越数十次工具调用、运行期间模型与外部世界持续交互。能力叙事之外，一个更朴素的问题浮出水面：长任务几乎必然中途失败。
+2026 年 9 月，Cognition 发布了面向长程异步软件工程的新模型（官方定位是"把需求丢进去，几小时后交付一个可用的分支"，具体命名与指标以官方公告为准）。这类任务的共同特征是：步骤数以百计、跨越数十次工具调用、运行期间模型与外部世界持续交互。能力叙事之外，一个更朴素的问题浮出水面：长任务几乎必然中途失败。
 
 上下文窗口会溢出，某个工具调用会超时，进程会被 OOM killer 杀掉，网络会抖。短任务失败重跑即可，长任务重来的代价可能是几小时的计算和一笔不小的账单。可靠性，从「加分项」变成了「能不能用」的前提。
 
@@ -36,7 +36,9 @@ categories: ["后端与架构"]
 
 ## 实操：用 SQLite 实现持久化 Agent Loop
 
-先看检查点与状态机的核心实现。SQLite 单文件、事务安全、零运维，足以撑起单机 Agent 的检查点存储。关键在于：每完成一步，在一个事务内同时写入状态与工具结果，保证「步骤完成」与「检查点落盘」是原子的。
+先看检查点与状态机的核心实现。SQLite 单文件、事务安全、零运维，足以撑起单机 Agent 的检查点存储。关键在于：**每完成一步，把「新状态」和「这一步的工具结果」放进同一个事务写下去**，保证数据库里不会出现"步数加了、结果没写"这种半截快照。
+
+这里要说清"原子"的边界：事务只覆盖数据库内的两行写入，**工具调用本身（发邮件、下单、改文件）在事务之外**。如果 `act()` 成功了、`save()` 之前进程被杀，副作用已经发生而检查点没记，重启后这一步必然重放。所以光有事务还不够，工具侧必须能按幂等键去重——这是两个机制配着用的，缺一个都不成立。
 
 ```python
 import json
@@ -91,13 +93,15 @@ ALLOWED = {"plan": {"act"}, "act": {"observe"},
            "observe": {"plan", "done"}, "done": set()}
 _EXECUTOR = ThreadPoolExecutor(max_workers=4)
 
-def act_with_timeout(act, tool, args, timeout: float):
-    future = _EXECUTOR.submit(act, tool, args)
+def act_with_timeout(act, tool, args, timeout: float, idem_key: str):
+    """软超时：到点停止等待，但任务不会真的被中止——去重靠 idem_key。"""
+    future = _EXECUTOR.submit(act, tool, args, idem_key)
     try:
-        return future.result(timeout=timeout)     # 单步硬超时
+        return future.result(timeout=timeout)
     except FutureTimeout:
+        # cancel() 对已经开始执行的任务返回 False，线程不会被 kill
         future.cancel()
-        raise TimeoutError(f"工具 {tool} 超过 {timeout}s 未返回")
+        raise TimeoutError(f"工具 {tool} 超过 {timeout}s 未返回，等待对账")
 
 def run_agent(run_id, store, think, act, max_steps=200, step_timeout=30.0):
     snap = store.load(run_id) or {
@@ -108,7 +112,9 @@ def run_agent(run_id, store, think, act, max_steps=200, step_timeout=30.0):
         nxt = think(snap["context"], snap["state"])
         if nxt["to_state"] not in ALLOWED[snap["state"]]:
             raise ValueError(f"非法迁移: {snap['state']} -> {nxt['to_state']}")
-        result = act_with_timeout(act, nxt["tool"], nxt["args"], step_timeout)
+        # 幂等键由 run_id + 步号构成：同一步重放多少次，工具侧都只执行一次
+        result = act_with_timeout(act, nxt["tool"], nxt["args"], step_timeout,
+                                  idem_key=f"{run_id}:{snap['step']}")
         snap["context"].append({"step": snap["step"], "action": nxt, "result": result})
         snap["payload"][str(snap["step"])] = result
         snap["state"], snap["step"] = nxt["to_state"], snap["step"] + 1
@@ -117,6 +123,12 @@ def run_agent(run_id, store, think, act, max_steps=200, step_timeout=30.0):
 ```
 
 `think` 负责基于当前上下文产出下一步动作，`act` 执行具体工具。注意恢复逻辑：只要传入同一个 `run_id`，`load` 就能取回上次的状态并自然续跑，调用方无需感知「这是第一次还是第 N 次启动」。
+
+这段代码里最容易被当成"已经搞定"的，是 `future.result(timeout=...)`。它只是**不再等**，不是**不再跑**：Python 线程无法被外部强杀，超时那一刻工具仍在后台执行，可能继续写文件、继续发请求；紧接着我们重试这一步，副作用就发生了两次。
+
+要真正"停掉"，只有两条路——进程隔离（`multiprocessing` 或子进程，超时直接 kill），或者给工具自己的客户端设超时（HTTP 的 `timeout=`、数据库的 `statement_timeout`），让它从内部收敛。绝大多数 Agent 框架走第二条，因为进程隔离的序列化与状态同步成本太高。
+
+所以工程上的分工是：**软超时管"等多久"，幂等键管"最多执行一次"**。超时之后不要直接重试，先拿 `idem_key` 去对账——工具侧如果已经执行成功，直接取回结果；确认没执行，再重放。下面这节就是把这件事落到代码里。
 
 ## 实操：幂等工具与去重表
 

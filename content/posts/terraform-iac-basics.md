@@ -32,20 +32,29 @@ provider "aws" {
   region = "ap-southeast-1"
 }
 
+data "aws_vpc" "default" {
+  default = true
+}
+
 resource "aws_security_group" "web" {
-  name = "web-sg"
-  ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+  name        = "web-sg"
+  description = "web ingress"
+  vpc_id      = data.aws_vpc.default.id
+}
+
+# 新版 provider 推荐把规则拆成独立资源，不再用内联 ingress/egress 块
+resource "aws_vpc_security_group_ingress_rule" "web_http" {
+  security_group_id = aws_security_group.web.id
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 80
+  to_port           = 80
+  ip_protocol       = "tcp"
 }
 
 resource "aws_instance" "web" {
-  ami           = "ami-0123456789abcdef0"
-  instance_type = "t3.micro"
-  security_groups = [aws_security_group.web.name]
+  ami                    = "ami-0123456789abcdef0"
+  instance_type          = "t3.micro"
+  vpc_security_group_ids = [aws_security_group.web.id]
 
   tags = {
     Name = "web-server"
@@ -54,25 +63,29 @@ resource "aws_instance" "web" {
 }
 ```
 
-`security_groups = [aws_security_group.web.name]` 体现了资源间引用：Terraform 据此建立依赖图，保证先建安全组再建虚拟机。这种隐式依赖是声明式语言的精髓——你只说"引用它"，调度顺序由工具推导。
+`vpc_security_group_ids = [aws_security_group.web.id]` 体现了资源间引用：Terraform 据此建立依赖图，保证先建安全组再建虚拟机。这种隐式依赖是声明式语言的精髓——你只说"引用它"，调度顺序由工具推导。
+
+两个容易写错的地方：一是 `security_groups`（按名字关联）是 EC2-Classic 时代的参数，现在所有区域都是 VPC-only，应当用 `vpc_security_group_ids` 并按 `id` 引用，写成 `.name` 不仅会在改名时产生意外重建，新版 provider 也可能直接报错；二是安全组本身必须落在某个 VPC 里，不写 `vpc_id` 会静默使用默认 VPC，跨环境迁移时最容易在这里踩坑。
 
 ## state：Terraform 的记忆与远程后端
 
 Terraform 靠一个 state 文件记录"代码里声明的资源"与"真实世界资源"的映射。没有 state，它就不知道某个资源是否已经存在、该更新还是该新建。因此 state 是 Terraform 最关键的资产，必须妥善保管与共享。
 
-单机本地 state 适合尝鲜，团队协作必须用远程后端，配合加锁防止并发冲突。以 S3 + DynamoDB 锁为例：
+单机本地 state 适合尝鲜，团队协作必须用远程后端，配合加锁防止并发冲突。以 S3 后端为例：
 
 ```hcl
 terraform {
   backend "s3" {
-    bucket         = "mycompany-terraform-state"
-    key            = "prod/network/terraform.tfstate"
-    region         = "ap-southeast-1"
-    dynamodb_table = "terraform-locks"   # 状态锁，防止两人同时 apply
-    encrypt        = true                # 静态加密
+    bucket       = "mycompany-terraform-state"
+    key          = "prod/network/terraform.tfstate"
+    region       = "ap-southeast-1"
+    encrypt      = true     # 静态加密
+    use_lockfile = true     # Terraform 1.10+：S3 原生锁，不需要 DynamoDB
   }
 }
 ```
+
+如果你手上还是老项目，可能会看到 `dynamodb_table = "terraform-locks"` 这种写法——它是 S3 后端在 1.10 之前的加锁方案，需要额外维护一张 DynamoDB 表，1.11 起官方已标记为 deprecated。新项目直接用 `use_lockfile` 就够了。
 
 ## plan / apply 与漂移检测
 
@@ -89,9 +102,12 @@ terraform plan -out=tfplan
 # 确认无误后应用；生产环境建议由 CI 统一执行
 terraform apply tfplan
 
-# 销毁（高危，务必先 plan 确认）
-terraform destroy -plan
+# 销毁（高危）：先出一份销毁计划看清楚，再执行
+terraform plan -destroy -out=destroy.tfplan
+terraform apply destroy.tfplan
 ```
+
+注意 `terraform destroy` **没有** `-plan` 这个参数，写了只会得到 `flag provided but not defined: -plan`。想"先看再删"的正确姿势就是上面两步：`plan -destroy` 生成计划文件，`apply` 那个文件。图省事的话 `terraform destroy` 直接执行也行，但它会交互式要求你手打 `yes` 确认——在 CI 里反而更危险，因为很多镜像会预先接好 stdin。
 
 `plan` 是安全阀门——任何变更先看到 diffs 再决定。`apply` 成功后 state 被更新。
 

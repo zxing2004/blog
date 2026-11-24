@@ -9,7 +9,7 @@ categories: ["后端与架构"]
 
 ## 热点引入：开源模型爆发，自托管从"极客玩具"走向选项
 
-2026 年 8 月，国产开源模型密集爆发：Qwen3.8-Max 以 2.4 万亿参数开源，DeepSeek V4-Pro 正式版 GA。开源阵营与闭源旗舰的定性差距持续缩小，越来越多团队开始认真评估"把模型跑在自己手里"。
+2026 年 8 月，国产开源模型密集发布：万亿参数级别的开源权重、以及若干旗舰模型的正式版 GA 接连落地（具体版本号以各家官方公告为准）。开源阵营与闭源旗舰的定性差距持续缩小，越来越多团队开始认真评估"把模型跑在自己手里"。
 
 自托管的吸引力很实在：数据不出内网、调用成本可控、可深度定制和缓存。但门槛同样真实——一个万亿级模型，光权重就以 TB 计，远不是单机能扛的。多数团队的现实起点，是从中小尺寸或量化版本入手，先把链路跑通，再谈规模。
 
@@ -63,16 +63,19 @@ print(estimate_memory(2400, "fp8", kv_gb=200, act_gb=50))
 ```bash
 export MODEL_ID="Qwen/Qwen3-72B-Instruct"   # 替换为实际模型 ID
 
-# 下载（支持断点续传）
-huggingface-cli download "$MODEL_ID" \
+# 下载：新版 CLI 入口是 hf，断点续传已是默认行为，不需要额外开关
+hf download "$MODEL_ID" \
   --local-dir ./models/$(basename "$MODEL_ID") \
-  --local-dir-use-symlinks False \
-  --resume-download
+  --revision main          # 生产环境请固定成具体的 commit hash
 
-# 校验：从仓库拿到官方 sha256 后逐个比对
-cd ./models/$(basename "$MODEL_ID")
-sha256sum -c SHA256SUMS 2>/dev/null || echo "无官方清单，改用 manufest 校验"
+# 校验：权重文件的 sha256 记在 LFS 元数据里，从 API 取出来后逐个比对
+hf api models/"$MODEL_ID" --expand siblings \
+  | jq -r '.siblings[] | select(.lfs) | "\(.lfs.sha256)  \(.rfilename)"' \
+  > SHASUMS.local
+sha256sum -c SHASUMS.local
 ```
+
+注意两个旧写法已经不能用了：`--local-dir-use-symlinks` 在新版被移除，`--resume-download` 从 `huggingface_hub` 0.23 起废弃（断点续传本来就是默认行为），照抄老教程会直接报 `unrecognized arguments`。另外 Hugging Face 仓库并不提供 Git 项目里那种 `SHA256SUMS` 文件，`sha256sum -c SHA256SUMS` 必然失败——要校验就从 LFS 元数据里取哈希。
 
 生产环境建议把权重放到对象存储或共享文件系统，并固定 revision/commit hash，避免"昨天能跑今天挂"。
 
@@ -97,9 +100,9 @@ python -m vllm.entrypoints.openai.api_server \
 
 关键参数含义：
 
-- `--tensor-parallel-size`：张量并行度，必须能被注意力头数整除，节点内使用。
-- `--gpu-memory-utilization`：允许占用的显存比例，留太少浪费、留太多易 OOM，常用 0.85～0.92。
-- `--max-model-len`：最大上下文长度，**直接决定 KV Cache 预分配上限**，与并发能力强相关。
+- `--tensor-parallel-size`：张量并行度，方向别记反了——是**这个值要能整除注意力头数**（GQA 模型还要整除 KV 头数），不是"被头数整除"。72B 模型 64 个注意力头，TP=4 合法，TP=5 就会报 head 数不匹配。
+- `--gpu-memory-utilization`：允许 vLLM 使用的显存比例。它划出的是"权重 + 激活 + KV 池"的总盘子，常用 0.85～0.92，留一点给框架临时张量和通信 buffer。
+- `--max-model-len`：单条请求允许的最大上下文长度。它不预分配 KV——KV 池是按这个比例算出来、再分块按需分配的，它只决定单请求能占多长，以及启动时对池容量做一次校验。
 - `--max-num-seqs`：最大并发序列数，越大吞吐越高但 KV 显存压力越大。
 - `--enable-prefix-caching`：缓存公共前缀（如 system prompt），对长 system prompt 收益明显。
 - 若权重是 FP8/INT4，加 `--quantization fp8`（或对应方案）并相应调低显存预期。
@@ -126,7 +129,7 @@ curl http://localhost:8000/v1/models       # 已加载模型
 curl http://localhost:8000/metrics         # Prometheus 指标（request 延迟、吞吐、显存等）
 ```
 
-把 `/metrics` 接入 Prometheus + Grafana，重点盯 `gpu_cache_usage`（KV Cache 占用率）、请求延迟与排队长度，它们是最直接的容量信号。
+把 `/metrics` 接入 Prometheus + Grafana，重点盯 `vllm:gpu_cache_usage_perc`（KV Cache 占用率，老版本叫 `vllm:gpu_cache_usage`，换引擎版本时先对一下指标名）、请求延迟与排队长度，它们是最直接的容量信号。
 
 ## 实操五：Docker Compose 部署
 
@@ -157,11 +160,11 @@ services:
 
 ## KV Cache、并发与 OOM 排查
 
-KV Cache 是推理时被低估的显存大户，其占用与 `并发数 × 序列长度` 成正比。一个常见误区是 `max-model-len` 设得远大于实际需求——它会抬高单次请求的 KV 上限，直接压缩可并发的序列数。正确的做法是按业务 P99 长度设定该值，再用 `max-num-seqs` 控制并发。
+KV Cache 是推理时被低估的显存大户，其占用与 `并发数 × 序列长度` 成正比。一个常见误区是 `max-model-len` 设得远大于实际需求——它本身不会预占显存（PagedAttention 按需分块），但一旦真的来了长请求，就会吃掉池子里大块的空间，把能并发的序列数压下来。正确的做法是按业务 P99 长度设定该值，再用 `max-num-seqs` 控制并发。
 
 常见 OOM 原因与对策：
 
-- **启动时就 OOM**：`gpu-memory-utilization` 过高、权重+KV 预估超出显存。降低该值、减小 `max-model-len`，或增加 TP 度。
+- **启动时就报 "No available memory for the cache blocks"**：权重本身就撑满了 `gpu-memory-utilization` 划出的盘子，KV 池分不到空间。这时候**该往上调**这个比例（比如 0.90 → 0.95），或者减小 `max-model-len`、加 TP 度。反过来把它调低只会让盘子更小，报错更快。
 - **运行中 OOM**：并发突增导致 KV 耗尽。降低 `max-num-seqs`，开启交换（swap）或限制单请求长度。
 - **加载报错 head 数不匹配**：TP 度必须整除注意力头数与 KV 头数（GQA 模型尤其注意），调整 TP 值。
 
@@ -169,7 +172,7 @@ KV Cache 是推理时被低估的显存大户，其占用与 `并发数 × 序�
 
 - **先小规模验证再扩容**。用最小配置跑通"下载→启动→调用"闭环，再逐步加 TP、加并发，避免一次性调一堆参数导致问题无法定位。
 - **固定模型版本与量化方案**。模型或量化方式一变，显存与质量都可能漂移，务必在配置中显式固定并纳入版本管理。
-- **给 KV Cache 留监控告警**。`gpu_cache_usage` 持续接近 1 是拥塞前兆，应触发扩容或限流。
+- **给 KV Cache 留监控告警**。`vllm:gpu_cache_usage_perc` 持续接近 1 是拥塞前兆，应触发扩容或限流。
 - **prefix caching 几乎总是值得开**。只要存在稳定 system prompt，它就能显著降低重复 prefill 开销。
 - **别把 `--gpu-memory-utilization` 拉满**。要给框架临时张量和通信 buffer 留余量，0.9 左右通常是稳妥选择。
 

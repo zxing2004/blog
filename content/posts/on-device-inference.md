@@ -70,7 +70,7 @@ print("量化完成:", INT8_MODEL)
 
 ```python
 from onnxruntime.quantization import (
-    quantize_static, QuantType, CalibrationDataReader
+    quantize_static, QuantType, QuantFormat, CalibrationDataReader
 )
 
 class MyCalibrator(CalibrationDataReader):
@@ -84,9 +84,14 @@ quantize_static(
     model_input=FP32_MODEL,
     model_output="model_static_int8.onnx",
     calibration_data_reader=calib,
-    quant_type=QuantType.QInt8,
+    quant_format=QuantFormat.QDQ,        # 端侧多为 QDQ 格式，兼容性最好
+    activation_type=QuantType.QInt8,     # 注意：不是 quant_type
+    weight_type=QuantType.QInt8,
+    per_channel=True,
 )
 ```
+
+`quant_type` 这个参数名只在 `quantize_dynamic` 里存在，`quantize_static` 把激活和权重分开给，写成 `quant_type=` 会直接抛 `TypeError: unexpected keyword argument`。
 
 ### 加载并推理
 

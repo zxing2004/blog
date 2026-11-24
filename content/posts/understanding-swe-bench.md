@@ -9,7 +9,7 @@ categories: ["工具与效率"]
 
 ## 热点引入：编码能力被量化到新高度
 
-2026 年 6 月，Anthropic 发布 Claude Fable 5，其 SWE-bench 得分达到 80.3%，把"AI 写代码能力"的量化数字推到了一个新高度。每隔一段时间，我们就能看到类似的新闻：某某模型又刷新了 SWE-bench 纪录，百分比逼近甚至超越人类工程师的某个区间。
+2026 年上半年，几家头部厂商的编码模型陆续把 SWE-bench Verified 的分数推到 80% 上下（各家口径不同，以官方榜单为准），把"AI 写代码能力"的量化数字推到了一个新高度。每隔一段时间，我们就能看到类似的新闻：某某模型又刷新了 SWE-bench 纪录，百分比逼近甚至超越人类工程师的某个区间。
 
 但作为一线工程师，看到这些数字时不妨多问一句：**80% 到底意味着什么？它意味着我团队里 80% 的活可以交给它了吗？** 答案远没有这么简单。理解 SWE-bench 的构造方式与局限，是避免被榜单误导的第一步。
 
@@ -67,27 +67,56 @@ def apply_patch(patch_text):
 接下来跑测试并判定结果：
 
 ```python
+import subprocess
+import xml.etree.ElementTree as ET
+
 def run_tests(test_cmd, fail_to_pass, pass_to_pass):
-    """返回 (resolved, 详情)。仅当所有目标测试通过且原有测试未回归才算成功。"""
+    """跑测试并用 JUnit XML 逐条判定：F2P 必须全过，P2P 不能有任何失败。"""
     result = subprocess.run(
-        test_cmd, shell=True, cwd=REPO,
-        capture_output=True, text=True,
+        f"{test_cmd} --junitxml=report.xml",
+        shell=True, cwd=REPO, capture_output=True, text=True,
     )
-    out = result.stdout + result.stderr
-    f2p_ok = all(t in out and "FAILED" not in out for t in fail_to_pass)
-    p2p_ok = all(t in out for t in pass_to_pass)
-    return f2p_ok and p2p_ok, {"f2p": f2p_ok, "p2p": p2p_ok}
+    root = ET.parse(f"{REPO}/report.xml").getroot()
+
+    outcome = {}          # 用例名 -> passed / failed / error / skipped
+    for case in root.iter("testcase"):
+        name = case.get("name")
+        if case.find("failure") is not None:
+            outcome[name] = "failed"
+        elif case.find("error") is not None:
+            outcome[name] = "error"
+        elif case.find("skipped") is not None:
+            outcome[name] = "skipped"
+        else:
+            outcome[name] = "passed"
+
+    f2p_ok = all(outcome.get(t) == "passed" for t in fail_to_pass)
+    # P2P 出现 failed / error 都算回归；skipped 单独暴露，不当作通过
+    p2p_failed = [t for t in pass_to_pass if outcome.get(t) in ("failed", "error")]
+    p2p_ok = not p2p_failed
+    return f2p_ok and p2p_ok, {
+        "f2p": f2p_ok,
+        "p2p": p2p_ok,
+        "p2p_failed": p2p_failed,
+        "collection_error": result.returncode not in (0, 1),   # 2 = 收集/导入就崩了
+    }
 
 # 评测一个任务
+F2P = ["test_issue_42"]
+P2P = ["test_existing_behavior"]
+
 prepare("a1b2c3d")
+# 基线校验：修之前 F2P 必须仍是失败、P2P 必须是通的，否则这个任务本身就不成立
+_, base = run_tests("pytest -q tests/test_issue_42.py", F2P, P2P)
+assert not base["f2p"], "任务定义有问题：F2P 在基线就跑通了"
+assert base["p2p"], f"任务定义有问题：P2P 在基线就失败 {base['p2p_failed']}"
+
 apply_patch(model_patch)
-resolved, detail = run_tests(
-    "pytest -q tests/test_issue_42.py",
-    fail_to_pass=["test_issue_42"],
-    pass_to_pass=["test_existing_behavior"],
-)
+resolved, detail = run_tests("pytest -q tests/test_issue_42.py", F2P, P2P)
 print("SOLVED" if resolved else "UNSOLVED", detail)
 ```
+
+为什么不能用 `"FAILED" not in out` 这种字符串匹配：失败用例的名字同样会出现在 pytest 的汇总里，`t in out` 永远为真；而任何一种无关用例失败，都会让整个 F2P 判定翻成 False。**用"名字出现在输出里"冒充"这个用例通过了"，恰恰是本文后面要批评的"骗过测试"**。要么解析 JUnit XML 逐条取状态，要么用 `-rA` 严格解析摘要行，别拿子串判断当断言。
 
 要点：**必须在干净容器里跑**，避免模型看到测试答案或污染环境；补丁应用失败要单独归类，不能简单算作"没解决"。
 
@@ -109,4 +138,4 @@ print("SOLVED" if resolved else "UNSOLVED", detail)
 
 ## 小结
 
-SWE-bench 把"写代码"这件模糊的事变成了可测量的工程问题，这是巨大进步——测试驱动的客观判定、真实取材的任务设计都值得肯定。但 80.3% 这样的数字更适合作为**横向比较与趋势观察的坐标**，而不是"可以替代多少工程师"的换算系数。数据污染、榜单过拟合和测试覆盖的局限提醒我们：分数不等于生产力。真正可靠的评估，永远来自你自己的代码库和真实任务。
+SWE-bench 把"写代码"这件模糊的事变成了可测量的工程问题，这是巨大进步——测试驱动的客观判定、真实取材的任务设计都值得肯定。但 80% 这样的数字更适合作为**横向比较与趋势观察的坐标**，而不是"可以替代多少工程师"的换算系数。数据污染、榜单过拟合和测试覆盖的局限提醒我们：分数不等于生产力。真正可靠的评估，永远来自你自己的代码库和真实任务。

@@ -8,9 +8,9 @@ tags: ["推理优化", "Continuous Batching", "成本", "吞吐"]
 categories: ["后端与架构"]
 ---
 
-## 热点引入：175 万亿 Token/日背后的成本账
+## 热点引入：每天百万亿 Token 背后的成本账
 
-2026 年 8 月公开数据显示，国内日均 Token 调用量已达约 175 万亿。这个量级意味着，推理成本已经从"技术细节"上升为"商业模式能否成立"的核心变量——每百万 token 的单价下降一点点，乘以这个体量都是巨大的差额。
+公开报道显示，国内日均 Token 调用量已经进入百万亿量级（各家统计口径不一，是否含缓存命中、是否只算 API 调用差别很大，具体数字以原始报告为准）。不管精确值是多少，这个量级已经说明一件事：推理成本从"技术细节"上升为"商业模式能否成立"的核心变量——每百万 token 的单价下降一点点，乘以这个体量都是巨大的差额。
 
 于是问题变得非常工程化：**同样的 GPU，怎样跑出更多 token？** 答案不在"换更快的卡"这么简单，而在于理解 LLM 推理的两个阶段有着完全不同的瓶颈，并据此设计调度方式。Continuous Batching 与 Prefill/Decode 分离（PD 分离）正是近年最重要的两项吞吐优化。本文把它们讲透，并给出成本与指标的度量方法。
 
@@ -110,23 +110,31 @@ print(f"吞吐翻倍后: {c2:.2f} 元")
 ```python
 import statistics
 
-def summarize(requests):
-    """requests: [{'ttft':秒, 'output_tokens':整数, 'decode_time':秒}]"""
+def summarize(requests, window_s):
+    """requests: [{'start':秒, 'ttft':秒, 'output_tokens':整数, 'decode_time':秒}]
+    window_s: 观测窗口的墙钟时长（首请求开始 → 末请求结束）
+    """
     ttft = [r["ttft"] for r in requests]
     tpot = [r["decode_time"] / max(r["output_tokens"], 1) for r in requests]
     total_tokens = sum(r["output_tokens"] for r in requests)
-    total_time = sum(r["ttft"] + r["decode_time"] for r in requests)
     return {
         "p50_ttft_ms": round(statistics.median(ttft) * 1000),
         "avg_tpot_ms": round(statistics.mean(tpot) * 1000),
-        "throughput_tps": round(total_tokens / total_time, 1),
+        # 吞吐的分母是墙钟时长，不是各请求延迟之和
+        "throughput_tps": round(total_tokens / window_s, 1),
+        # 单流等效吞吐：把并发度按 1 算，用来和单条基准对比
+        "single_stream_tps": round(
+            total_tokens / sum(r["ttft"] + r["decode_time"] for r in requests), 1
+        ),
     }
 
 print(summarize([
-    {"ttft": 0.2, "output_tokens": 100, "decode_time": 2.0},
-    {"ttft": 0.3, "output_tokens": 150, "decode_time": 2.8},
-]))
+    {"start": 0.0, "ttft": 0.2, "output_tokens": 100, "decode_time": 2.0},
+    {"start": 0.1, "ttft": 0.3, "output_tokens": 150, "decode_time": 2.8},
+], window_s=2.9))
 ```
+
+这里最容易算错的是分母。把每个请求的 `ttft + decode_time` 加起来当总时长，等于假设这些请求是**排队串行**跑完的——而 Continuous Batching 的全部意义就是让它们重叠执行。用这种口径算吞吐，并发越高低估得越狠：上面两条请求串行相加是 5.3 秒，实际墙钟只有 2.9 秒，`throughput_tps` 会从 86.2 掉到 47.2。**吞吐必须是"窗口内总 token ÷ 墙钟时长"**，那个串行口径只能当"单流等效吞吐"看，用来跟单条基准比快慢。
 
 ## 延迟与吞吐的权衡
 

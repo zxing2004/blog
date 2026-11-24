@@ -83,7 +83,8 @@ fzf 是一个通用的模糊查找器。给它一个列表，它提供交互式�
 ```bash
 # ~/.zshrc
 # 让 fzf 用 rg 生成候选文件，体验比 find 好得多
-export FZF_DEFAULT_COMMAND='rg --files --hidden --glob "!.git"'
+# 注意是 !.git/* 而不是 !.git —— 后者只匹配目录本身，不排除里面的文件
+export FZF_DEFAULT_COMMAND='rg --files --hidden --glob "!.git/*"'
 export FZF_DEFAULT_OPTS='--height 40% --layout=reverse --border'
 
 # 激活 Ctrl-R 搜索历史命令、Ctrl-T 选文件、Alt-C 进目录
@@ -106,12 +107,15 @@ bindkey -s '^g' 'vim $(fzf)\n'
 fzf --preview 'head -30 {}'
 ```
 
-**场景二**：批量搜索并进入文件。把 `rg -l` 的结果喂给 fzf，选中后用 vim 打开并跳到匹配行：
+**场景二**：批量搜索并进入文件，选中后直接跳到匹配行：
 
 ```bash
-# 搜索所有含 "TODO" 的文件，fzf 选择后打开
-rg -l "TODO" | fzf --preview 'rg -n "TODO" {}' | xargs -r vim
+# rg -n 输出 "文件:行号:内容"，用 fzf 的 {1} {2} 取前两个字段
+rg -n "TODO" | fzf --preview 'rg -n "TODO" {1}' \
+                  --bind 'enter:become(vim +{2} {1})'
 ```
+
+这里 `--bind 'enter:become(...)'` 是关键。如果用管道 `| xargs vim`，传给 vim 的只有文件路径（`rg -l` 根本不输出行号），打开后停在第 1 行，"跳到匹配行"就成了空话；而且 `xargs -r` 是 GNU 扩展，macOS 自带的 BSD xargs 不认这个参数，直接报错。
 
 配合 tmux，你可以把编辑器、搜索、日志监控分在固定窗格，形成"一眼看全、手不离键盘"的工作台。很多人会写一个脚本，用 `tmux send-keys` 一键搭建整套布局，这就把环境准备也自动化了。一个典型做法是：建好三个窗格，分别启动代码编辑器、运行开发服务器、实时 `tail -f` 日志，下次上班运行一条命令，熟悉的工作台瞬间就位。这种"环境即代码"的思路，与基础设施即配置一脉相承——把重复的准备工作固化成脚本，既省时间又不会遗漏步骤。
 

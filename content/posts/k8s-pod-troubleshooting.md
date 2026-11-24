@@ -43,8 +43,8 @@ kubectl logs <pod> -n <ns> -c <container> --previous
 # 3. 进入容器现场排查（没有 shell 时可 kubectl debug）
 kubectl exec -it <pod> -n <ns> -- sh
 
-# 4. 看集群事件流，按时间倒序
-kubectl get events -n <ns> --sort-by=.lastTimestamp
+# 4. 看集群事件流，按时间升序排列，最近的在最后
+kubectl get events -n <ns> --sort-by=.lastTimestamp | tail -20
 
 # 5. YAML 层面核对资源配置
 kubectl get pod <pod> -n <ns> -o yaml
@@ -60,30 +60,31 @@ kind: Pod
 metadata:
   name: web
 spec:
+  imagePullSecrets:              # 私有仓库凭证，属于 PodSpec，与 containers 同级
+    - name: regcred
   containers:
     - name: app
       image: registry.example.com/web:v1.2.3
-      imagePullSecrets: []      # 私有仓库时在此引用
       resources:
-        requests:              # 调度依据，太小会调度到资源不足的节点
+        requests:                # 调度依据，太小会调度到资源不足的节点
           cpu: "200m"
           memory: "256Mi"
-        limits:                # 硬上限，超了就被 OOMKilled
+        limits:                  # 硬上限：memory 超了被 OOMKilled，cpu 超了只是被限流
           cpu: "1"
           memory: "512Mi"
-      livenessProbe:            # 失败会重启容器
+      livenessProbe:             # 失败会重启容器
         httpGet:
           path: /healthz
           port: 8080
         initialDelaySeconds: 10
         periodSeconds: 5
-      readinessProbe:          # 失败只是摘流量，不重启
+      readinessProbe:            # 失败只是摘流量，不重启
         httpGet:
           path: /ready
           port: 8080
         periodSeconds: 5
   nodeSelector:
-    disktype: ssd             # 调度约束，标签不存在会 Pending
+    disktype: ssd                # 调度约束，标签不存在会 Pending
 ```
 
 十个高频原因归结为几类：调度层（资源不足、nodeSelector/affinity 无匹配、污点容忍缺失）、镜像层（名称/标签错误、私有仓库认证）、配置层（ConfigMap/Secret 缺失、环境变量错）、运行层（应用崩溃、探针过于激进、启动慢于 initialDelay）、存储层（PVC 未绑定、挂载路径冲突）、资源层（limits 过低触发 OOM）。按这六类逐一对照状态，定位速度会快很多。
@@ -96,7 +97,7 @@ spec:
 
 liveness 探针别和 readiness 混用：把依赖外部服务的检查放进 liveness，网络抖动会触发无限重启。liveness 只查进程自身存活，readiness 才管流量摘挂。
 
-`requests` 影响调度，`limits` 影响运行，两者都要设。limits 的 memory 设为 0 或不设，是 OOMKilled 最常见的诱因之一。
+`requests` 影响调度，`limits` 影响运行，两者都要设。OOMKilled 最常见的诱因是 memory limit 设得过低、贴着应用的实际峰值，甚至低于峰值；反过来，不设 memory limit 的容器没有 cgroup 上限，不会被 OOMKilled，风险转移到了节点层面——它会一路吃内存，直到被 kubelet 驱逐或拖垮整台机器。
 
 Job 类容器崩溃可用 `restartPolicy: OnFailure`，长期跑的服务才用 `Always`，别让一次性任务陷入 CrashLoopBackOff。
 

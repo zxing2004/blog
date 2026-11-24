@@ -32,7 +32,7 @@ sda              12.80  131.40   512.00  4208.00    21.03   152.66     7.11   17
 
 ## 排查思路
 
-我们进入 ESXi 宿主机，用 esxtop 看磁盘视图（`esxtop` 后按 `d`），确认延迟发生在哪一层，并顺手看了这个 datastore 的容量。
+我们进入 ESXi 宿主机，用 esxtop 看磁盘设备视图（`esxtop` 后按 `u`；按 `d` 是 adapter 视图，只有 vmhba 粒度，看不到具体的 `naa.` 设备），确认延迟发生在哪一层，并顺手看了这个 datastore 的容量。
 
 ```text
 esxtop - 磁盘视图（关键列）
@@ -62,12 +62,13 @@ $ vim-cmd vmsvc/snapshot.get 23
 	Snapshot Description: Created by Veeam Backup & Replication
 	Snapshot Creation Time: 2026-09-05 02:00:13
 $ ls -lh /vmfs/volumes/datastore1/report-prod/*.vmdk
--rw-------  1 root  root  198G Sep  9 09:12 report-prod-000001.vmdk
+-rw-------  1 root  root  198G Sep  9 09:12 report-prod-000001-delta.vmdk
+-rw-------  1 root  root   628 Sep  9 09:12 report-prod-000001.vmdk
 -rw-------  1 root  root  240G Sep  9 09:12 report-prod-flat.vmdk
 -rw-------  1 root  root   628 Sep  9 09:12 report-prod.vmdk
 ```
 
-一个快照，名字直接把凶手写出来了：`VEEAM BACKUP TEMPORARY SNAPSHOT`，创建时间 9 月 5 日凌晨两点——正好是每晚备份任务的时间点。基础盘是 thick 置备的 240G（`-flat.vmdk` 是真实数据文件，`report-prod.vmdk` 那 628 字节只是描述符），而 delta 文件 `report-prod-000001.vmdk` 从零长到了 198G，而且还在长大。
+一个快照，名字直接把凶手写出来了：`VEEAM BACKUP TEMPORARY SNAPSHOT`，创建时间 9 月 5 日凌晨两点——正好是每晚备份任务的时间点。理清这几行文件是看懂 ESXi 快照的关键：`report-prod.vmdk` 和 `report-prod-000001.vmdk` 都只有 628 字节，是**描述符**（纯文本，记着对应数据文件的路径与参数）；真正装数据的是 `-flat.vmdk`（基础盘的 240G）和 `-000001-delta.vmdk`（快照期间的写入增量）。所以涨到 198G 的是 delta，不是那个同名的描述符——在 `ls` 里它们名字只差一个 `-delta` 后缀，看错一次就会得出"基础盘被改了"的错误结论。
 
 根因至此基本确认：备份任务在 9 月 5 日给这台虚机打了快照，备份中途失败，快照既没被提交也没被删除，就这么挂了四天。这四天里虚机的所有写入都不再落到基础盘，而是追加到 delta 上——报表服务每天要重算历史数据，写入量本来就大，198G 就是这么堆出来的。
 

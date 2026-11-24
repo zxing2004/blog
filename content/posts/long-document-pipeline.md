@@ -21,7 +21,7 @@ categories: ["后端与架构"]
 
 **② 层级摘要（map-reduce 摘要树）**。对超长文档，先对每个块分别摘要（map），再对摘要汇总二次摘要（reduce），形成"块摘要 → 章节摘要 → 全文摘要"的树状结构。查询时既可以看全貌，也可以下钻到具体块。
 
-**③ 检索增强**。用户提问时，先用检索定位相关块，再把少量高相关块送入模型作答，避免全文入模。检索链路里**重排序（rerank）**是关键一环：向量检索召回 Top 50 后，用交叉编码器精排，挑出真正相关的 Top 5，显著提升精度。
+**③ 检索增强**。用户提问时，先用检索定位相关块，再把少量高相关块送入模型作答，避免全文入模。检索链路里**重排序（rerank）**是关键一环：向量检索召回 Top 30 后，用交叉编码器精排，挑出真正相关的 Top 5，显著提升精度。
 
 ## 实操：切分、重排与层级摘要
 
@@ -32,39 +32,48 @@ from tiktoken import encoding_for_model
 enc = encoding_for_model("gpt-4o")
 
 def split_by_tokens(text, max_tokens=512, overlap=50, separators=None):
-    """优先在高优先级分隔符处切分，控制每块 token 数。"""
+    """按分隔符优先级递归切分：某一级切出的子块若仍超长，就降一级继续切。"""
     separators = separators or ["\n\n", "\n", "。", "；", " ", ""]
-    n = len(enc.encode(text))
-    if n <= max_tokens:
+    if len(enc.encode(text)) <= max_tokens:
         return [text]
-    # 选一个能切出较均衡两块的分隔符
-    for sep in separators:
-        if sep and sep in text:
-            parts = text.split(sep)
-            if len(parts) > 1:
-                chunks = []
-                cur = ""
-                for part in parts:
-                    candidate = cur + (sep if cur else "") + part
-                    if len(enc.encode(candidate)) > max_tokens and cur:
-                        chunks.append(cur)
-                        # 保留尾部 overlap 个 token 作为重叠
-                        cur = " ".join(
-                            enc.decode([t]).strip()
-                            for t in enc.encode(cur)[-overlap:]
-                        ) + sep + part
-                    else:
-                        cur = candidate
-                if cur:
-                    chunks.append(cur)
-                return chunks
-    # 兜底：强行按 token 截断
-    toks = enc.encode(text)
-    return [enc.decode(toks[i:i + max_tokens])
-            for i in range(0, len(toks), max_tokens - overlap)]
+
+    sep, rest = separators[0], separators[1:]
+
+    # 这一级分隔符用不上（或已到最后一级）：换下一级；没有下一级就按 token 硬切
+    if sep == "" or sep not in text:
+        if not rest:
+            toks = enc.encode(text)
+            step = max_tokens - overlap
+            return [enc.decode(toks[i:i + max_tokens])
+                    for i in range(0, len(toks), step)]
+        return split_by_tokens(text, max_tokens, overlap, rest)
+
+    chunks, cur = [], ""
+    for part in text.split(sep):
+        candidate = cur + (sep if cur else "") + part
+        if len(enc.encode(candidate)) <= max_tokens:
+            cur = candidate
+            continue
+        if cur:
+            chunks.append(cur)
+            # 重叠部分整段 decode 再拼，逐 token decode 会把中文和子词切碎
+            tail = enc.decode(enc.encode(cur)[-overlap:])
+            cur = tail + sep + part
+        else:
+            cur = part
+        # 单个 part 本身就超长：带着下一级分隔符递归切开
+        if len(enc.encode(cur)) > max_tokens and rest:
+            sub = split_by_tokens(cur, max_tokens, overlap, rest)
+            chunks.extend(sub[:-1])
+            cur = sub[-1]
+    if cur:
+        chunks.append(cur)
+    return chunks
 ```
 
-递归切分器按分隔符优先级逐级尝试：先找段落，找不到就退到换行、句号，最后才按 token 硬切。这样能最大程度保留语义完整。
+真正的递归体现在两处：一是这一级分隔符切出来的块还超长时，带着 `rest` 再切一次；二是这一段里根本没有该分隔符时，直接降级到下一级。**只切一遍就 return 的写法不叫递归**——那会把一个超长段落原样塞进一个块，然后在送入模型时才炸出超长错误。
+
+另一个容易忽略的细节是重叠区的处理：`enc.decode(enc.encode(cur)[-overlap:])` 是整段解码，而 `" ".join(enc.decode([t]) for t in ...)` 是逐个 token 解码再拼空格，后者会把中文和子词切得七零八落，重叠区变成乱码。
 
 ### 重排序（rerank）
 

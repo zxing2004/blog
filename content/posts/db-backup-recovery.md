@@ -54,9 +54,10 @@ expire_logs_days=7             # 或 binlog_expire_logs_seconds
 
 ```bash
 # 全量备份，--single-transaction 保证 InnoDB 一致性且不加锁
-# --master-data=2 记录备份时刻的 binlog 位置（写入文件注释）
+# --source-data=2 记录备份时刻的 binlog 位置（写进文件注释）
+# 注意：MySQL 8.0.26+ 用 --source-data，--master-data 已弃用（仍可用，但会告警）
 mysqldump -u root -p --single-transaction \
-  --master-data=2 --routines --triggers \
+  --source-data=2 --routines --triggers \
   --all-databases > full_backup_$(date +%F).sql
 
 # 实时归档 binlog（由专门账号执行）
@@ -72,13 +73,17 @@ mysqlbinlog --read-from-remote-server --host=db-host \
 mysql -u root -p < full_backup_2026-07-10.sql
 
 # 2. 从备份文件注释中取出起始 position
-grep -i "CHANGE MASTER" full_backup_2026-07-10.sql
+grep -i "CHANGE REPLICATION SOURCE" full_backup_2026-07-10.sql
 
 # 3. 重放 binlog 到误操作之前（用 --stop-datetime 精确截断）
 mysqlbinlog --start-position=120 \
   --stop-datetime="2026-07-10 09:59:59" \
   /backup/binlog/mysql-bin.000123 | mysql -u root -p
 ```
+
+`--source-data` 写进去的注释关键字也跟着变了：旧版是 `CHANGE MASTER`，8.0.26+ 是 `CHANGE REPLICATION SOURCE`，用 `grep` 取 position 时两个都试一下，免得在关键时候捞不到起始位点。
+
+如果备份是脚本产物（见下一节的 `.sql.gz`），恢复时记得先解压再喂给 mysql：`zcat full_2026-07-10.sql.gz | mysql -u root -p`。直接 `mysql < xxx.sql.gz` 会报语法错误——gzip 的魔数在 mysql 眼里就是一堆乱码。
 
 用 `--stop-datetime` 或 `--stop-position` 卡在误操作前一刻，就能跳过那条致命语句。恢复前务必在临时实例上预演一遍。
 
@@ -101,7 +106,7 @@ LOG=/var/log/mysql-backup.log
 
 mkdir -p "$BACKUP_DIR/$DATE"
 mysqldump -u root -p"$DB_PASS" --single-transaction \
-  --master-data=2 --routines --triggers --all-databases \
+  --source-data=2 --routines --triggers --all-databases \
   | gzip > "$BACKUP_DIR/$DATE/full_$DATE.sql.gz"
 
 # 校验：文件非空且 gzip 完整

@@ -16,18 +16,22 @@ categories: ["运维部署"]
 
 ## 阶段划分与制品缓存
 
-典型流水线分为四段：构建（compile/build）→ 测试（unit/integration）→ 镜像（package）→ 部署（deploy）。核心原则是"一次构建，多处部署"：同一个制品制品从测试环境逐级晋升到生产，杜绝"测试用的包和生产重新编译的包不是同一个"这种致命问题。
+典型流水线分为四段：构建（compile/build）→ 测试（unit/integration）→ 镜像（package）→ 部署（deploy）。核心原则是"一次构建，多处部署"：同一个制品从测试环境逐级晋升到生产，杜绝"测试用的包和生产重新编译的包不是同一个"这种致命问题。
 
 缓存是提速关键。依赖下载（npm/maven/go mod）往往占构建大半时间，应按依赖清单哈希做 key 缓存；Docker 层缓存也要利用好：
 
 ```yaml
-# 基于 go.sum 哈希缓存依赖，命中率与正确性兼顾
+# key 由 go.sum 的内容哈希决定：依赖一变 key 就变，旧缓存自然失效
 cache:
-  key: "$CI_JOB_NAME-$CI_COMMIT_REF_SLUG"
+  key:
+    files:
+      - go.sum
   paths:
     - .cache/go-build
     - go/pkg/mod
 ```
+
+用 `key: files:` 而不是自己拼字符串，是因为 GitLab 会对列出的文件算内容哈希生成 key——写成 `key: "$CI_JOB_NAME-$CI_COMMIT_REF_SLUG"` 这类形式，依赖升级了 key 却不变，缓存会一直命中旧依赖，正是"本地能编译、CI 上莫名报错"的常见来源。
 
 制品（jar、二进制、镜像）应存入制品库（如 Harbor、GitLab Registry）并以 commit SHA 打标签，保证任何一次部署都能精确追溯到代码版本。
 
@@ -40,7 +44,7 @@ cache:
 ## 一份完整的 GitLab CI 示例
 
 ```yaml
-stages: [build, test, package, deploy]
+stages: [build, test, package, deploy, rollback]
 
 variables:
   IMAGE: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
@@ -58,7 +62,8 @@ unit-test:
   stage: test
   image: golang:1.22
   script:
-    - go test -race -cover ./...
+    - go test -race -coverprofile=coverage.out ./...
+    - go tool cover -func=coverage.out | tail -n 1    # 输出 total: (statements) 78.3%
   coverage: '/total:\s+\(statements\)\s+(\d+\.\d+)%/'
 
 package-image:
@@ -78,21 +83,29 @@ deploy-staging:
   environment:
     name: staging
 
+# 前提：app 与 app-canary 两个 Deployment 的 Pod 模板都带 app: web 标签，
+# Service 的 selector 只写 app: web，于是两边 Pod 会被同一个 Service 选中，
+# 流量按副本数近似分配。要精确百分比得上 Istio VirtualService 权重。
 deploy-production:
   stage: deploy
   script:
-    # 金丝雀：先把 10% 流量导到新版本
+    # 金丝雀：9 个稳定副本 + 1 个金丝雀副本 ≈ 10% 流量
+    - kubectl scale deploy/app --replicas=9 -n production
     - kubectl set image deploy/app-canary app=$IMAGE -n production
-    - kubectl wait --for=condition=available deploy/app-canary -n production
-    - ./scripts/verify-canary.sh   # 对比错误率与 P99，异常则 exit 1
+    - kubectl scale deploy/app-canary --replicas=1 -n production
+    - kubectl rollout status deploy/app-canary -n production --timeout=180s
+    - ./scripts/verify-canary.sh   # 对比 canary 与 stable 的错误率、P99，异常则 exit 1
     # 校验通过，全量滚动并摘除金丝雀
     - kubectl set image deploy/app app=$IMAGE -n production
+    - kubectl scale deploy/app --replicas=10 -n production
     - kubectl rollout status deploy/app -n production --timeout=300s
     - kubectl scale deploy/app-canary --replicas=0 -n production
   when: manual                     # 生产发布需人工确认
   environment:
     name: production
 ```
+
+这里有个常见误解值得点明：`kubectl set image` **只换镜像，不切流量**。如果 app 和 app-canary 是两个互不相干的 Deployment、Service 只选其中一边，那"先发金丝雀"就只是多起了一份没人访问的 Pod，接着全量发布等于直接上生产。真正实现 10% 分流有两种做法：一是上面这种"两个 Deployment 共用 selector、按副本数近似"，够用但粒度粗；二是引入 Ingress 或 Istio 的权重路由，把 10%、30%、50% 写进配置，粒度精确但多一层依赖。
 
 `kubectl rollout status` 是关键：它让流水线真正确认新版本就绪，而不是"命令提交成功"就算完成。
 
@@ -106,14 +119,15 @@ deploy-production:
 
 ```yaml
 rollback:
-  stage: deploy
+  stage: rollback          # 必须独立成后置 stage，不能和 deploy 同 stage
   when: on_failure
   script:
+    - kubectl rollout history deploy/app -n production | tail -n 3
     - kubectl rollout undo deploy/app -n production
-    - kubectl rollout status deploy/app -n production
+    - kubectl rollout status deploy/app -n production --timeout=180s
 ```
 
-`when: on_failure` 保证只有前置部署失败时才回滚，把恢复动作固化进流水线。
+`when: on_failure` 的语义是"**前面某个阶段**失败时触发"，它不看同一个 stage 里的兄弟 job。所以如果把 rollback 和 deploy-production 都放在 `deploy` 阶段，生产部署自己失败时它根本不会跑（反而会被更早的 build/test 失败误触发）。把它挪到独立的 `rollback` 阶段，顺序才成立。如果前面阶段失败时不该动生产，再在脚本开头加一道判断，确认"当前线上的镜像确实不是期望版本"再执行 undo。
 
 质量门禁前移：在 test 阶段接入 SAST、依赖漏洞扫描和代码规范检查，问题越早发现成本越低。敏感信息（registry 密码、kubeconfig）用 CI 的 Secret 变量注入，绝不写进 YAML。
 

@@ -41,11 +41,14 @@ cron 用五字段表达式描述时间，依次是：分、时、日、月、周
 # /etc/crontab 或 crontab -e 内容
 SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/bin:/bin
-MAILTO=you@example.com       # 任务输出会邮件发送
+# 变量赋值行不能带行尾注释：cron 会把 "# 任务输出…" 整段当成邮箱地址
+MAILTO=you@example.com
 
 0 2 * * * /opt/scripts/backup.sh >> /var/log/backup.log 2>&1
 0 9 * * 1-5 /opt/scripts/report.sh >> /var/log/report.log 2>&1
 ```
+
+这里有个很隐蔽的坑：`MAILTO=you@example.com  # 注释` 看着像正常的配置加注释，但 crontab 只把"整行以 `#` 开头"当作注释，环境变量行是**取等号后全部内容**作为值。结果 MAILTO 变成了 `you@example.com  # 注释`，邮件自然发不出去，而且 cron 不会报错——它只是静默地失败。
 
 注意 cron 默认环境非常干净，`PATH` 往往只有系统路径。脚本里用到 `python3`、`conda` 等自定义路径时，要么在 crontab 里显式设置 `PATH`，要么在脚本中用绝对路径——这是新手最常踩的坑。
 
@@ -71,10 +74,12 @@ tar -czf "$DST/app-$(date +%F).tar.gz" -C "$SRC" . || {
   exit 1
 }
 
-# 删除 7 天前的备份
-find "$DST" -name 'app-*.tar.gz' -mtime +"$KEEP" -delete
+# 只保留最近 7 天：-mtime +6 表示"修改时间在 6×24 小时以前"，即第 8 天及更早
+find "$DST" -name 'app-*.tar.gz' -mtime +"$((KEEP - 1))" -delete
 log "备份完成，已清理超过 ${KEEP} 天的旧文件"
 ```
+
+`-mtime` 的边界值得单独记一笔：它是按 24 小时为单位向下取整的，`-mtime +7` 删的是**满 7 天以上**、也就是第 8 天的文件，想"保留最近 7 天"得写 `+6`。差一天看着无害，直到某次恢复时发现唯一需要的那份刚好被删了。
 
 `set -euo pipefail` 是 Shell 脚本的"安全带"：`-e` 遇错即停，`-u` 变量未定义即报错，`-o pipefail` 让管道中任何一环失败都算失败。把它写在每个脚本开头，能避免大量"静默失败"的诡异问题。`log` 函数用 `tee` 同时输出到终端和日志文件，排障时一目了然。
 

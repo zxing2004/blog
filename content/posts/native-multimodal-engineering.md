@@ -9,7 +9,7 @@ categories: ["后端与架构"]
 
 ## 热点引入：原生多模态成为旗舰标配
 
-2026 年 9 月，GPT-6 系列与 Gemini 4 相继发布，文本、图像、视频的统一理解能力不再是可选项，而是旗舰模型的标配。"原生多模态"这个词随之频繁出现在发布材料里。
+2026 年下半年，几家头部厂商的新一代旗舰模型密集发布，文本、图像、视频的统一理解能力不再是可选项，而是旗舰的标配。"原生多模态"这个词随之频繁出现在发布材料里（具体型号与版本号以各厂商官方发布为准，本文不点名）。
 
 但对工程团队来说，"原生"二字需要拆开看：它到底是一种架构差异，还是仅仅营销话术？真正的区别，在于模型是**先把图像硬塞进文本空间再对齐**，还是**从训练一开始就让多种模态在同一个 token 空间里联合建模**。这个差异决定了能力上限、训练成本，以及你该调用 API 还是自己造轮子。
 
@@ -124,30 +124,38 @@ class SimpleVLM(nn.Module):
 ```python
 import torch
 
-def rope_1d(x, dim, seq_len):
-    """对最后一维按位置做旋转，示意实现。x: [..., seq_len, dim]"""
+def rope_1d(x, dim, pos):
+    """对最后一维做旋转。x: [B, heads, N, dim]，pos: [N] 每个 token 在该轴上的坐标。"""
     inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim))
-    pos = torch.arange(seq_len).float()
-    ang = torch.einsum("i,j->ij", pos, inv_freq)
-    cos, sin = ang.cos(), ang.sin()
+    ang = torch.einsum("n,j->nj", pos.float(), inv_freq)    # [N, dim/2]
+    cos, sin = ang.cos()[None, None], ang.sin()[None, None]  # 广播到 [B, heads, N, dim/2]
     x_even, x_odd = x[..., ::2], x[..., 1::2]
     return torch.stack([x_even * cos - x_odd * sin,
                         x_even * sin + x_odd * cos], dim=-1).flatten(-2)
 
-def rope_3d(x, t, h, w, dim_per_axis):
+def rope_3d(x, pos_t, pos_h, pos_w, dim_per_axis):
     """
-    x: [B, heads, T*H*W, dim]
-    t,h,w: 时间/高/宽轴上的位置索引
-    思路：把特征维切成三段，分别用三个轴的位置做 1D RoPE
+    x: [B, heads, N, dim]，N = T*H*W
+    pos_t/pos_h/pos_w: [N]，每个 token 自己在时间/高/宽轴上的坐标
+    思路：把特征维切成三段，分别用三个轴的坐标做 1D RoPE
     """
     d = dim_per_axis
     xt, xh, xw = x[..., :d], x[..., d:2*d], x[..., 2*d:]
-    return torch.cat([rope_1d(xt, d, t),
-                      rope_1d(xh, d, h),
-                      rope_1d(xw, d, w)], dim=-1)
+    return torch.cat([rope_1d(xt, d, pos_t),
+                      rope_1d(xh, d, pos_h),
+                      rope_1d(xw, d, pos_w)], dim=-1)
+
+# 构造坐标：N 个 token，每个 token 有自己的 (t, h, w)
+T, H, W = 8, 16, 16
+idx = torch.arange(T * H * W)
+pos_t = idx // (H * W)
+pos_h = (idx % (H * W)) // W
+pos_w = idx % W
 ```
 
-工程上更常见的是预计算三个轴的频率表，并在注意力计算时按 (t,h,w) 取用，以避免逐 token 重复计算。
+这里的关键是三个参数必须是**逐 token 的坐标张量**（长度为 N），而不是三个整数。传整数的话，`arange` 出来的位置和序列维对不上，广播直接报错；就算凑巧对上，也是在给所有 token 套同一套位置编码，等于没做三维扩展。
+
+工程上更常见的是预计算三个轴的 cos/sin 表（每个轴一张 `[max_len, dim/2]`），前向时按 `(t,h,w)` 索引取用，避免逐 token 重复算 `cos/sin`。
 
 ## 多模态训练的难点
 

@@ -75,7 +75,11 @@ $ find /var/log/pods -type f | wc -l
 先停服务避免边清边写，再按时间删日志，最后把上限补上。
 
 ```bash
-$ systemctl stop kubelet && systemctl stop containerd
+$ kubectl cordon worker-07
+$ kubectl drain worker-07 --ignore-daemonsets --delete-emptydir-data --force
+$ systemctl stop kubelet
+$ crictl ps -q | wc -l          # 确认容器已全部退出
+0
 $ find /var/log/pods -type f -name '*.log' -mtime +1 -delete
 $ crictl rmi --prune
 Deleted: 3a9f...c21e
@@ -83,21 +87,28 @@ Deleted: 7b40...e93a
 $ df -i /
 Filesystem       Inodes    IUsed    IFree IUse% Mounted on
 /dev/sda2      13107200  6894114  6213086   53% /
-$ systemctl start containerd && systemctl start kubelet
+$ systemctl start kubelet
+$ kubectl uncordon worker-07
 $ kubectl get nodes worker-07
 NAME        STATUS   ROLES    AGE    VERSION
 worker-07   Ready    <none>   712d   v1.28.6
 ```
 
-删掉一天前的日志、清掉悬空镜像层，inode 从 100% 回到 53%。心跳在半分钟内恢复，被驱逐的 Pod 由 ReplicaSet 重新调度回集群。
+这里有个顺序不能省：**必须先让容器真的退出，再删日志**。第一版操作是直接 `systemctl stop kubelet && systemctl stop containerd` 然后删文件，结果 `df -i` 一动不动——因为容器进程不是 containerd 自己托管的，而是每个容器一个的 `containerd-shim` 带着，停掉守护进程并不会带走它们。进程还活着，就还持有那些 `.log` 的打开文件描述符；Linux 下 unlink 一个仍被打开的文件只减链接计数，inode 要等最后一个 fd 关闭才回收。删了等于没删，只是"看不见了"。
 
-但只清不够。这批日志能长到这个规模，是因为 kubelet 的容器日志上限从来没配过。默认是每个容器 `--container-log-max-size=10Mi`、`--container-log-max-files=5`，而这套集群是手写 systemd unit 启动的，参数在迁移时漏掉了，等于允许每个容器无限写。补进 drop-in 后逐台滚动重启：
+这也是那次排查里更贵的一次误判：我们一度以为"删了六十多 G 日志，inode 却没降"，进而怀疑 ext4 出了毛病。
 
-```ini
-# /etc/systemd/system/kubelet.service.d/10-log.conf
-[Service]
-Environment="KUBELET_EXTRA_ARGS=--container-log-max-size=50Mi --container-log-max-files=4"
+清完之后 inode 从 100% 回到 53%——日志风暴集中在故障前二十多个小时，`-mtime +1` 这一刀砍掉的正好是那批，剩下五百多万个是最近一天新写的。心跳在半分钟内恢复，被驱逐的 Pod 由 ReplicaSet 重新调度回集群。
+
+但只清不够。这批日志能长到这个规模，是因为 kubelet 的容器日志上限从来没配过。默认是每个容器 `--container-log-max-size=10Mi`、`--container-log-max-files=5`，而这套集群是手写 systemd unit 启动的，参数在迁移时漏掉了，等于允许每个容器无限写。补齐的时候我们写进了 KubeletConfiguration，而不是往 drop-in 里塞环境变量：
+
+```yaml
+# /var/lib/kubelet/config.yaml 片段
+containerLogMaxSize: 50Mi
+containerLogMaxFiles: 4
 ```
+
+为什么不用 `KUBELET_EXTRA_ARGS`？因为 kubeadm 生成的 `kubelet.service` 里，`ExecStart` 只展开 `$KUBELET_KUBECONFIG_ARGS`、`$KUBELET_CONFIG_ARGS`、`$KUBELET_KUBELET_ARGS` 这几个变量，`KUBELET_EXTRA_ARGS` 根本没人读。往 drop-in 里写 `Environment="KUBELET_EXTRA_ARGS=..."` 看着很合理，实际一点效果都没有——改完 `systemctl cat kubelet` 能看到变量，`ps` 里却看不到参数。写进配置文件才是与启动方式无关的做法，改完逐台滚动重启。
 
 最后把 `/var/log` 单独挂了一块盘，跟 `/` 解耦——日志再疯，也吃不掉 nodefs 的 inode 池。
 
@@ -121,7 +132,7 @@ Environment="KUBELET_EXTRA_ARGS=--container-log-max-size=50Mi --container-log-ma
 
 第二，**DiskPressure / MemoryPressure / PIDPressure 三种节点状况全部接入告警**，不再只盯 NotReady。这条如果早就有，故障在 01:58 就会被拦住，根本走不到 NotReady。
 
-第三，全集群统一容器日志上限，写进 kubelet 的 systemd drop-in，新节点上线作为基线检查项；`/var/log` 独立分区，避免和应用数据抢同一个 inode 池。
+第三，全集群统一容器日志上限，写进 kubelet 的配置文件，新节点上线作为基线检查项；`/var/log` 独立分区，避免和应用数据抢同一个 inode 池。
 
 第四，做了一个节点体检脚本，把 `df -h`、`df -i`、悬空镜像计数、kubelet 心跳状态打包成一条命令，交接班跑一遍。
 

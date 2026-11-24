@@ -39,13 +39,15 @@ canary:
 第一件事是止血，但回滚之前得先确认上游状态，否则可能滚到更糟的版本。看历史：
 
 ```bash
-$ helm history settle-api -n prod
+$ helm history settle-api -n prod | tail -n 4
 REVISION  UPDATED                   STATUS      CHART              DESCRIPTION
-1         Mon Oct 13 19:20:04 2026  superseded  settle-api-2.3.1   Install complete
-2         Tue Oct 14 14:05:47 2026  deployed    settle-api-2.4.0   Upgrade "gray 5%"
+36        Mon Aug 24 11:02:19 2026  superseded  settle-api-2.3.1   Upgrade complete
+37        Tue Oct 14 14:05:47 2026  deployed    settle-api-2.4.0   Upgrade "gray 5%"
 ```
 
-只有两个 revision：1 是上一个稳定版 2.3.1，2 就是刚才这次灰度——它是 2.4.0，也就是出问题的新版本。要回到稳定态，得回滚到 **1**。
+37 就是刚才这次灰度——它是 2.4.0，出问题的新版本；36 是八月上线、一直跑到今天的 2.3.1。要回到稳定态，得回滚到 **36**。
+
+这里顺带说个容易看错的点：`helm history` 默认最多显示 256 条，用 `tail` 只是截了个尾。这个 release 从去年到现在已经滚了三十几次，别看到"36"就以为发过三十多次事故——它只是总第 36 次发布。
 
 这里有个必须搞清楚的问题：`weight: 100` 是从哪来的？Chart 的默认值是 0，我写的灰度文件里也没有 `weight` 这个键。于是去看两个 values 文件的实际内容：
 
@@ -83,14 +85,15 @@ $ helm upgrade settle-api ./chart/settle-api -n prod \
 回滚：
 
 ```bash
-$ helm rollback settle-api 1 -n prod
+$ helm rollback settle-api 36 -n prod
 Rollback was a success! Happy Helming!
-$ helm history settle-api -n prod
+$ helm history settle-api -n prod | tail -n 3
 REVISION  UPDATED                   STATUS      CHART              DESCRIPTION
-1         Mon Oct 13 19:20:04 2026  superseded  settle-api-2.3.1   Install complete
-2         Tue Oct 14 14:05:47 2026  superseded  settle-api-2.4.0   Upgrade "gray 5%"
-3         Tue Oct 14 14:19:02 2026  deployed    settle-api-2.3.1   Rollback to 1
+37        Tue Oct 14 14:05:47 2026  superseded  settle-api-2.4.0   Upgrade "gray 5%"
+38        Tue Oct 14 14:19:02 2026  deployed    settle-api-2.3.1   Rollback to 36
 ```
+
+注意回滚并没有"回到 36"——它生成了一个新版本 38，内容等于 36。这条语义很关键：**Helm 的回滚是"用旧版本的配置再发一次"，不是把历史指针拨回去**。所以 `helm rollback settle-api 37` 会把那套坏配置再发一遍，越滚越糟。
 
 流量在几十秒内切回稳定版本，错误率回落。
 
@@ -100,23 +103,21 @@ REVISION  UPDATED                   STATUS      CHART              DESCRIPTION
 
 ```bash
 $ helm diff upgrade settle-api ./chart/settle-api -n prod \
-    -f values-prod.yaml -f values-gray.yaml | grep -A4 -B2 "weight"
+    -f values-prod.yaml -f values-gray.yaml | grep -A8 -B2 "route"
   spec:
     http:
     - route:
       - destination:
           host: settle-api
           subset: stable
--       weight: 100
 +       weight: 95
-      - destination:
-          host: settle-api
-          subset: canary
--       weight: 0
++     - destination:
++         host: settle-api
++         subset: canary
 +       weight: 5
 ```
 
-diff 把"stable 100 / canary 0"变成"stable 95 / canary 5"这件事明明白白摆出来了。确认无误后才执行 upgrade，这次 5% 稳稳地放上去，观察半小时无异常，再按计划逐步放量。
+因为回滚后线上是 `enabled: false` 的单路由形态，diff 表现为"一条无权重路由"变成"stable 95 / canary 5 两条"，全部是新增行——这正是我们期望看到的形态。如果 diff 里出现 `- weight: 100` 这种**旧值**，反而说明基线里已经带了权重，也就是那个占位值又开始作祟了，属于必须停下来查的信号。确认无误后再执行 upgrade，这次 5% 稳稳地放上去，观察半小时无异常，才按计划逐步放量。
 
 顺带给 Chart 加了 values schema 校验，未知键直接报错：
 

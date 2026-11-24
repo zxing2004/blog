@@ -16,10 +16,10 @@ categories: ["运维部署"]
 
 ## 采集链路：从 Agent 到存储
 
-两条路线的采集层其实高度相似，通常用 Filebeat 或 Fluent Bit 作为边车（sidecar）或节点级 Agent：
+两条路线的采集层其实高度相似，通常用 Filebeat 或 Fluent Bit 作为边车（sidecar）或节点级 Agent。但具体配置是两套，不能混在一份文件里：
 
 ```yaml
-# Filebeat 采集容器日志并打上 Kubernetes 元数据
+# 方案 A：Filebeat 采容器日志进 Elasticsearch
 filebeat.inputs:
   - type: filestream
     id: container-logs
@@ -27,26 +27,46 @@ filebeat.inputs:
       - /var/log/containers/*.log
     parsers:
       - container: ~
-    processors:
-      - add_kubernetes_metadata:
-          matchers:
-            - logs_path:
-                logs_path: "/var/log/containers/"
+
+# processors 是顶层键，不能缩进到 inputs 的列表项下面
+processors:
+  - add_kubernetes_metadata:
+      default_indexers.enabled: false
+      default_matchers.enabled: false
+      matchers:
+        - logs_path:
+            logs_path: "/var/log/containers/"
 
 output.elasticsearch:
   hosts: ["elasticsearch:9200"]
   index: "logs-%{+yyyy.MM.dd}"
-
-# 输出到 Loki 时改用 loki output，并配置 labels
-output.loki:
-  hosts: ["http://loki:3100"]
-  labels:
-    namespace: "${kubernetes.namespace}"
-    pod: "${kubernetes.pod.name}"
-    container: "${kubernetes.container.name}"
 ```
 
-采集层的关键决策是"结构化在哪做"：ELK 生态常用 Logstash/Ingest Node 在写入前解析 JSON、抽取字段；Loki 则鼓励在 Agent 侧用 `processors` 打标签，内容保持原样。
+```yaml
+# 方案 B：走 Loki 就用 Promtail（Filebeat 没有 loki output）
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: kubernetes-pods
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_pod_container_name]
+        target_label: container
+```
+
+这里有两个必须知道的限制：**Filebeat 没有 `output.loki`**，它只支持 elasticsearch/logstash/kafka/redis/file/console 这几类输出，要写 Loki 得换 Promtail、Fluent Bit 或用 Logstash 的 loki 插件；而且**一份 Filebeat 配置只能启用一个 output**，两个都写会直接报 "multiple outputs are configured"。所以"一份配置同时喂 ELK 和 Loki"在 Filebeat 上是做不到的，要么分两个 Agent，要么在 Logstash 里做双写。
+
+采集层的关键决策是"结构化在哪做"：ELK 生态常用 Logstash/Ingest Node 在写入前解析 JSON、抽取字段；Loki 则鼓励在 Agent 侧只打少量标签（Promtail 的 `relabel_configs`、Fluent Bit 的 `loki` 插件），日志内容保持原样，解析推迟到查询时用 LogQL 做。
 
 ## 查询能力对比
 

@@ -88,15 +88,16 @@ ORDER BY embedding <=> '[0.01,0.02,...]'::vector
 LIMIT 10;
 ```
 
-Python 侧可用 `pgvector` 库把 numpy 数组转换为适配的字符串：
+Python 侧可用 `pgvector` 库把 numpy 数组直接绑定成参数：
 
 ```python
+import psycopg                      # 注意是 psycopg3，不是 psycopg2
+import numpy as np
 from pgvector.psycopg import register_vector
-import psycopg2, numpy as np
 
-conn = psycopg2.connect(...)
+conn = psycopg.connect("postgresql://...")
 register_vector(conn)
-vec = np.array([0.01, 0.02, 0.03])  # 实际由嵌入模型生成
+vec = np.zeros(1536, dtype=np.float32)   # 维度必须与列定义一致，实际由嵌入模型生成
 with conn.cursor() as cur:
     cur.execute(
         "SELECT id, title FROM documents "
@@ -104,6 +105,8 @@ with conn.cursor() as cur:
     )
     print(cur.fetchall())
 ```
+
+两个极易踩的坑：一是 `pgvector.psycopg` 是给 **psycopg3** 用的适配层，配 psycopg2 的连接会直接类型报错，psycopg2 要用 `from pgvector.psycopg2 import register_vector`；二是查询向量的维度必须和 `vector(1536)` 完全一致，拿个三维数组去试会得到 `different vector dimensions`。
 
 ## 踩坑与最佳实践
 

@@ -18,7 +18,9 @@ categories: ["数据库"]
 
 InnoDB 的默认索引是 B+ 树结构。数据按索引键值有序地存放在叶子节点，非叶子节点只存键值和指针。对联合索引 `(a, b, c)` 而言，InnoDB 先按 `a` 排序，`a` 相同时按 `b` 排序，`b` 相同时再按 `c` 排序。这个"有序"是分层的：只有当 `a` 的值确定后，`b` 的有序性才有意义。
 
-这个结构直接决定了索引能否被使用。索引查找本质是一次"在有序序列里定位"的过程——你必须给出从左边界开始的、连续且确定的键值。一旦查询条件破坏了"从最左列开始"或"键值确定"这两个前提，B+ 树的有序性就无法被利用，优化器只能退回到全表扫描。七种失效场景，本质上都是这两个前提被破坏的变体。
+这个结构直接决定了索引能否被使用。索引查找本质是一次"在有序序列里定位"的过程——你必须给出从左边界开始的、连续且确定的键值。一旦查询条件破坏了"从最左列开始"或"键值确定"这两个前提，B+ 树的有序性就无法被利用，优化器通常会退回到全表扫描。七种失效场景，本质上都是这两个前提被破坏的变体。
+
+说"通常"是因为例外确实存在：覆盖索引下 `LIKE '%x%'` 可以退化成索引全扫描（`type=index`）；联合索引缺最左列时，MySQL 8.0.13+ 的 Skip Scan 在首列基数很低的情况下仍能用上索引；`index_merge` 也能让两个单列索引合并。这些例外不改变"该避开这些写法"的结论，但值得知道——被追问时能答上来的，才是真懂。
 
 还需要补充一点：B+ 树的叶子节点通过双向链表相连，因此范围查询（BETWEEN、大于、小于）和 ORDER BY 都能借助索引的顺序性完成。这也解释了"范围查询之后的列失效"——一旦某一列用范围定位，它之后的列就不再是连续确定的区间，B+ 树的定位能力到此为止，后续条件只能逐行过滤。MySQL 8.0 可借助索引条件下推（ICP）在引擎层提前过滤、减少回表次数，但无法恢复有序定位。
 
@@ -69,25 +71,31 @@ WHERE created_at >= '2026-03-12 00:00:00'
   AND created_at <  '2026-03-13 00:00:00';
 ```
 
-**4. LIKE 以通配符开头。** 前缀 `%` 破坏了有序定位，后缀 `%` 则不影响：
+**4. LIKE 以通配符开头。** 前导 `%` 破坏了有序定位；把通配符挪到后面（也就是前缀匹配）就能走索引：
 
 ```sql
 -- 反例：前导通配符
 SELECT * FROM orders WHERE order_no LIKE '%20260312';
--- 改写：使用后缀匹配
+-- 改写：前缀匹配（通配符在后，保留了最左前缀）
 SELECT * FROM orders WHERE order_no LIKE '20260312%';
 ```
 
-**5. OR 连接了非索引列。** OR 要求两侧都能走索引，只要有一列没索引，整个条件就退化：
+顺便澄清两个容易混的说法：`'20260312%'` 叫**前缀匹配**，不是"后缀匹配"——它能走索引正是因为通配符在后面。至于 `'%x%'` 也不总是绝对全表扫描：如果查询列被覆盖索引包住，优化器会做索引全扫描（`type=index`），虽然还是要扫完整个索引，但比回表便宜。
+
+**5. OR 连接了非索引列。** OR 要求两侧都能走索引，只要有一列没索引，整个条件通常就退化：
 
 ```sql
--- 反例：amount 无索引，导致 order_no 的索引也用不上
+-- 反例：amount 无索引，把 order_no 的索引一起拖下水
 SELECT * FROM orders WHERE order_no = 'A001' OR amount > 100;
--- 改写：拆成 UNION ALL，各自走索引
+
+-- 改写：先给 amount 建索引，再用 UNION（不能用 UNION ALL）
+ALTER TABLE orders ADD KEY idx_amount (amount);
 SELECT * FROM orders WHERE order_no = 'A001'
-UNION ALL
+UNION
 SELECT * FROM orders WHERE amount > 100;
 ```
+
+两个细节别搞错。一是**建索引这一步不能省**：只把 OR 拆成两条 SQL 而不给 `amount` 建索引，第二支照样全表扫描，两支都要跑，成本反而更高。二是**必须用 `UNION` 而不是 `UNION ALL`**：OR 对同一行只返回一次，`UNION ALL` 会让两个条件都命中的行出现两遍。只有确认两侧互斥（比如按业务前缀划分），才可以用 `UNION ALL` 省掉去重开销。
 
 **6. 范围查询后的列失效。** 联合索引中，`created_at` 之后若还有列，范围查询会让后续列失效。这里 `idx_union` 的第三列是 `created_at`：
 
@@ -113,7 +121,7 @@ ALTER TABLE orders MODIFY order_no VARCHAR(32)
 
 ## 用 EXPLAIN 验证判断
 
-所有猜测都必须用 `EXPLAIN` 落地。关注三个关键列：`type` 从好到坏大致是 `system > const > ref > range > index > ALL`，出现 `ALL` 就是全表扫描；`key` 显示实际选中的索引，`NULL` 代表没用索引；`Extra` 里的 `Using filesort`、`Using temporary` 往往意味着额外开销。
+所有猜测都必须用 `EXPLAIN` 落地。关注三个关键列：`type` 从好到坏大致是 `system > const > eq_ref > ref > range > index > ALL`（完整的还有 `ref_or_null`、`index_merge`、`unique_subquery` 等档位，这里只列最常见的），出现 `ALL` 就是全表扫描；`key` 显示实际选中的索引，`NULL` 代表没用索引；`Extra` 里的 `Using filesort`、`Using temporary` 往往意味着额外开销。
 
 ```sql
 EXPLAIN SELECT * FROM orders

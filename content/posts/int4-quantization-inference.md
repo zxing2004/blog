@@ -9,7 +9,9 @@ categories: ["后端与架构"]
 
 ## 热点引入：低比特量化走到台前
 
-2026 年 11 月，美团发布 LongCat-2.5，对专家权重与激活同时做了 INT4 全量化，官方给出的数据是 prefill 与 decode 吞吐提升约 43%。这个数字背后是一个清晰的产业信号：当模型规模继续膨胀、推理成本成为核心约束，单纯靠堆硬件已经不划算，低比特量化成了绕不开的一条路。
+2026 年 11 月，美团开源了 LongCat 系列的新版本，对专家权重与激活同时做了 INT4 全量化。官方给出的口径是 prefill 与 decode 吞吐提升约 43%——但这个数字有前提：它对应的是官方指定的 batch、序列长度与硬件组合，换个负载配置未必还能剩 43%。量化收益对 batch 大小极其敏感（decode 阶段尤其明显），看到百分比先问"在什么 batch 下测的"，比记住数字本身有用得多。
+
+无论如何，这个数字背后是一个清晰的产业信号：当模型规模继续膨胀、推理成本成为核心约束，单纯靠堆硬件已经不划算，低比特量化成了绕不开的一条路。
 
 INT8 量化早就不是新鲜事，但 INT4 的「甜点区」更诱人——权重体积直接砍到 FP16 的四分之一，显存带宽压力骤降，同样一张卡能装下更大的模型或 serv 更多并发。代价是精度损失明显放大，尤其在激活值上。于是问题从「要不要量化」变成了「如何在可接受的精度损失下把吞吐榨到最大」。
 
@@ -61,12 +63,24 @@ def quantize_per_channel_int4(w: torch.Tensor):
 def dequantize_per_channel_int4(q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     return q.to(torch.float32) * scale
 
+def pack_int4(q: torch.Tensor) -> torch.Tensor:
+    """两两打包进一个字节：低 4 位放偶数位元素，高 4 位放奇数位元素。"""
+    flat = q.to(torch.int8).view(-1)
+    lo = (flat[0::2] & 0x0F).to(torch.uint8)
+    hi = (flat[1::2] & 0x0F).to(torch.uint8)
+    return lo | (hi << 4)
+
 w = torch.randn(256, 512)
 q, s = quantize_per_channel_int4(w)
 w_hat = dequantize_per_channel_int4(q, s)
+packed = pack_int4(q)
+
 print("量化误差(MSE):", ((w - w_hat) ** 2).mean().item())
-print("显存压缩比:", w.numel() * 4 / (q.numel() + s.numel() * 4))  # FP32 vs INT4+scale
+# 分子 FP32 的 4 字节/元素；分母是打包后的 0.5 字节/元素 + 每通道一个 float32 scale
+print("压缩比:", (w.numel() * 4) / (packed.numel() + s.numel() * 4))   # ≈ 7.9，理论 8
 ```
+
+注意这里的 `q` 虽然存成 `torch.int8`，但取值范围只有 `[-8, 7]`——**它在容器里仍占 1 字节**。直接拿 `q.numel()` 当分母，算出来是 4 倍，那是"INT4 精度、INT8 存储"的账，不是真的 4-bit。必须打包成 0.5 字节/元素才叫 INT4；反过来，解量化前也要先解包。
 
 注意 INT4 在通用 GPU 上没有原生算术支持，实际算子往往把两个 4-bit 打包进一个字节，或用位运算模拟。因此「存得下」不等于「算得快」，还需要配套的内核才能兑现吞吐收益。
 

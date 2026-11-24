@@ -78,16 +78,14 @@ spec:
     name: letsencrypt-http
     kind: ClusterIssuer
 ---
-# Ingress 引用该 Secret 即可
+# Ingress 只引用上面那个 Certificate 产出的 Secret，不再打 cluster-issuer 注解
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: web
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-http
 spec:
   tls:
-    - hosts: [example.com]
+    - hosts: [example.com, www.example.com]
       secretName: web-tls
   rules:
     - host: example.com
@@ -102,11 +100,16 @@ spec:
                   number: 80
 ```
 
+这里有个必须二选一的地方。用 `cert-manager.io/cluster-issuer` 注解，是让 ingress-shim **自动**为你生成一个 Certificate（域名取自 `spec.tls[].hosts`）；手写 Certificate 则是自己控制 `dnsNames`。**两种方式不能同时用**：注解会额外生成一个同名 Certificate，两个 Certificate 抢同一个 `secretName`，最终 Secret 里是哪张证书取决于谁的控制器后写入——`www.example.com` 就这么丢的，而且症状很隐蔽（主域名正常，只有带 www 的访问报证书不匹配）。
+
+另外，`spec.tls[].hosts` 也要跟着写全。它决定 Ingress 认为这张证书该覆盖哪些域名，只写 `example.com` 的话，即使证书里有 www，Ingress 也不会为 www 的请求提供 TLS。
+
 Nginx 侧使用证书：
 
 ```nginx
 server {
-    listen 443 ssl http2;
+    listen 443 ssl;
+    http2 on;                     # nginx 1.25.1 起不再接受 listen ... http2 的写法
     server_name example.com;
     ssl_certificate     /etc/letsencrypt/live/example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
@@ -115,25 +118,32 @@ server {
 }
 ```
 
+`listen 443 ssl http2` 这种写法在 1.25.1 之前是标准姿势，之后被废弃（1.27 起只打警告不生效），新配置请把 `http2 on;` 单独写一行，否则你以为开了 HTTP/2，实际还在 1.1。
+
 泛域名场景把 solver 改为 `dns01` 并配置对应服务商（如 route53、cloudflare）的凭据即可。
 
 ## 私钥保护与 HSTS
 
-私钥的保护与证书本身同等重要。私钥文件应设为仅属主可读（`chmod 600`），绝不随代码仓库分发；一旦怀疑泄露，必须立即吊销并重新签发。Let's Encrypt 提供 OCSP 与 CRL 吊销查询，但更实际的做法是依靠短有效期与快速续期，把泄露窗口压到最小。启用 HSTS（HTTP Strict Transport Security）能强制浏览器只走 HTTPS，防止首次访问被降级攻击；不过 HSTS 会被浏览器缓存较长时间，上线前务必确认全站 HTTPS 已就绪，否则回滚会非常棘手。把私钥权限、吊销预案与 HSTS 一起纳入证书规范，HTTPS 才算真正落地。
+私钥的保护与证书本身同等重要。私钥文件应设为仅属主可读（`chmod 600`），绝不随代码仓库分发；一旦怀疑泄露，必须立即吊销并重新签发。关于吊销机制，这几年有个重要变化：**Let's Encrypt 已经停用 OCSP 响应服务，只提供 CRL**，CA/B Forum 也把 OCSP 改成了可选项，业界整体在往"短有效期 + CRL"走。这意味着吊销状态的分发比过去更慢、更依赖客户端主动查询——所以真正可靠的兜底不是吊销，而是**把证书寿命压短、把续期做快**，让泄露窗口本身就小到可接受。启用 HSTS（HTTP Strict Transport Security）能强制浏览器只走 HTTPS，防止首次访问被降级攻击；不过 HSTS 会被浏览器缓存较长时间，上线前务必确认全站 HTTPS 已就绪，否则回滚会非常棘手。把私钥权限、吊销预案与 HSTS 一起纳入证书规范，HTTPS 才算真正落地。
 
 ## 过期监控与最佳实践
 
 自动化也可能失效（ACME 账户异常、DNS 凭据过期、验证路径被防火墙挡住）。必须加一道过期监控兜底，用黑盒导出器或脚本检查剩余天数：
 
 ```bash
-# 检查域名证书剩余有效期（秒），小于 14 天（1209600s）则告警
+# 检查证书是否会在 14 天内过期；交给 openssl 自己算，不依赖 GNU date
 ENDPOINT=example.com:443
-DAYS_LEFT=$(echo | openssl s_client -connect $ENDPOINT -servername ${ENDPOINT%:*} 2>/dev/null \
-  | openssl x509 -noout -dates \
-  | awk -F= '/notAfter/{print $2}' \
-  | xargs -I{} date -d {} +%s | awk -v now=$(date +%s) '{print ($1-now)/86400}')
-awk -v d="$DAYS_LEFT" 'BEGIN{exit !(d<14)}' && echo "证书即将过期: ${DAYS_LEFT} 天"
+if echo | openssl s_client -connect $ENDPOINT -servername ${ENDPOINT%:*} 2>/dev/null \
+     | openssl x509 -noout -checkend $((14 * 86400)) >/dev/null 2>&1; then
+  echo "OK: $ENDPOINT 剩余有效期超过 14 天"
+else
+  echo "ALERT: $ENDPOINT 将在 14 天内过期，或握手失败，需人工介入"
+fi
 ```
+
+为什么不用 `date -d` 去解析 notAfter：`-d` 是 GNU coreutils 的扩展，macOS/BSD 自带的 `date` 没有这个参数，脚本在开发机上跑得好好的、换到 Mac 上就报 `illegal option -- d`。`openssl x509 -checkend <秒数>` 是 openssl 自带的能力，跨平台一致，也省掉了时区解析。如果要输出精确天数，用 `python3 -c` 解析 `-enddate` 更稳。
+
+还有个细节：`-checkend` 在握手失败时同样返回非零，所以告警文案里要把"或握手失败"带上——否则证书没问题、只是网络不通，也会被当成"即将过期"，处理方向就跑偏了。
 
 把这段做成定时任务并接入告警渠道，就能在续期失败时提前两周发现。
 

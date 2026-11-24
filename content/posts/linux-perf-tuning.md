@@ -72,9 +72,18 @@ bpftrace -e 'tracepoint:syscalls:sys_exit_read /comm == "nginx"/ {
   @[comm, args->ret] = count();
 }'
 
-# 用 BCC 工具直接抓慢 IO（超过 10ms）
-biosnoop -Q 10
+# 用 BCC 工具看 IO 延迟分布（按延迟分桶，直观看长尾）
+biolatency -m 10 1 5
+
+# 只看超过 10ms 的单次 IO：用 bpftrace 按纳秒阈值过滤
+bpftrace -e 'tracepoint:block:block_rq_issue { @start[args->dev, args->sector] = nsecs; }
+             tracepoint:block:block_rq_complete /@start[args->dev, args->sector]/
+             { $d = nsecs - @start[args->dev, args->sector];
+               if ($d > 10000000) { printf("%d ms\n", $d / 1000000); }
+               delete(@start[args->dev, args->sector]); }'
 ```
+
+顺便澄清一个常见误用：`biosnoop -Q` 里的 `-Q` 是"额外打印排队耗时"的开关，不是延迟阈值，后面跟数字并不会筛出慢 IO。想看阈值过滤，用上面的 bpftrace 自己比 `nsecs` 更直接；想看整体分布，`biolatency` 比逐条打印更省事。
 
 eBPF 的优势是无需改代码、无需重启，探针按需注入内核，开销通常可控制在个位数百分比，非常适合线上"只此一次"的疑难杂症。
 

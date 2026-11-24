@@ -24,7 +24,9 @@ PostgreSQL 则出身学院派，自称"世界上最先进的开源关系数据�
 
 ## 关键特性对比
 
-**JSON 支持**：两者都支持 JSON，但 PG 的 `JSONB` 是二进制存储、可索引、可高效查询，能力远超 MySQL 的 JSON 类型。PG 甚至可以用 GIN 索引加速 JSONB 的任意键查询：
+**JSON 支持**：这里有个流传很广的误解——"PG 的 JSONB 是二进制存储，MySQL 的 JSON 是文本所以慢"。不成立：MySQL 自 5.7 起就把 JSON 存成一种内部二进制格式，读取单个元素不需要解析整段文本。真正的差距不在存储格式，而在**索引能表达什么查询**。
+
+PG 的 `JSONB` 可以建 GIN 索引，直接加速包含（`@>`）、键存在（`?`）、键集合（`?|`、`?&`）这类**结构性判断**：
 
 ```sql
 -- PostgreSQL：JSONB 字段 + GIN 索引
@@ -32,6 +34,7 @@ CREATE TABLE events (
   id BIGSERIAL PRIMARY KEY,
   payload JSONB NOT NULL
 );
+-- 默认 jsonb_ops 支持 @> ? ?| ?&；只做 @> 时可用 jsonb_path_ops，索引更小更快
 CREATE INDEX idx_payload ON events USING GIN (payload);
 
 -- 查询 payload 中 metadata.level = 'error' 的记录
@@ -39,32 +42,61 @@ SELECT * FROM events
 WHERE payload @> '{"metadata": {"level": "error"}}';
 ```
 
-作为对比，MySQL 实现同样的"按 JSON 内字段查询并走索引"要借助生成列，表达更繁琐：
+注意 GIN 加速的是上面这种"整棵子树是否包含"的判断。如果要按抽出来的标量值做等值比较，GIN 帮不上忙，得建表达式索引（btree）：
 
 ```sql
--- MySQL：用生成列 + 普通索引模拟 JSON 字段查询
-ALTER TABLE events ADD COLUMN err_level VARCHAR(20)
-  GENERATED ALWAYS AS (payload->>'$.metadata.level') STORED,
-  ADD INDEX idx_err_level (err_level);
-
-SELECT * FROM events WHERE err_level = 'error';
+CREATE INDEX idx_err_level ON events ((payload #>> '{metadata,level}'));
+SELECT * FROM events WHERE payload #>> '{metadata,level}' = 'error';
 ```
 
-两者一对比，PG 的 JSONB 在表达力与灵活性上明显高出一档。
+MySQL 这一侧，同样的需求在 8.0.13 之后有两条路。第一条是**函数索引**，不再需要先加一张生成列：
+
+```sql
+-- MySQL 8.0.13+：直接对表达式建索引
+-- 注意 -> > 返回 LONGTEXT 不能直接索引，必须 CAST 成定长类型
+ALTER TABLE events
+  ADD INDEX idx_err_level ((CAST(payload->>'$.metadata.level' AS CHAR(20))));
+
+-- 查询里的表达式要跟索引表达式逐字对上，优化器才会用
+SELECT * FROM events
+WHERE CAST(payload->>'$.metadata.level' AS CHAR(20)) = 'error';
+```
+
+第二条是 8.0.17 引入的**多值索引**，专门解决"JSON 数组里任一元素命中"的场景——这在 PG 里要写 `@>` 或展开成 `jsonb_array_elements` 再 join，反而不如索引直接：
+
+```sql
+-- MySQL 8.0.17+：给 JSON 数组建多值索引
+ALTER TABLE events
+  ADD INDEX idx_tags ((CAST(payload->'$.tags' AS CHAR(20) ARRAY)));
+
+SELECT * FROM events WHERE 'mysql' MEMBER OF (payload->'$.tags');
+```
+
+所以两边的差异是**形状不同，不是高下**：PG 用 GIN 覆盖结构性子树匹配，运算符和 jsonpath 表达力更强，一条 `@>` 能描述很复杂的嵌套条件；MySQL 的索引必须绑定到某个具体路径/表达式上，复杂嵌套要么拆多个索引，要么在应用层拼 SQL。前者在"查询形态不确定、由用户拼条件"的场景更省事，后者在"路径固定、访问模式清楚"的场景反而索引更精准、写入代价更小（GIN 的插入放大是实打实的）。
 
 **扩展生态**：PG 拥有 PostGIS（地理信息）、pg_trgm（模糊匹配）、TimescaleDB（时序）等大量扩展，可以在数据库内完成原本需要额外组件的工作。MySQL 的插件生态相对单薄。
 
-**事务与锁**：两者都支持 ACID。PG 的 MVCC 实现更彻底，读不阻塞写、写不阻塞读；MySQL InnoDB 也做到这一点，但在某些 DDL 场景历史上依赖表锁（8.0 已大幅改进，支持原子 DDL 和部分 Instant DDL）。
+**事务与锁**：两者都支持 ACID，普通 `SELECT` 都不加锁、不阻塞写入，所以"读不阻塞写"不是 PG 的独有能力。真正的差别在**旧版本存在哪**：
+
+- PG 把旧版本留在堆表里，靠 `VACUUM` 回收。好处是回滚几乎瞬时（标记即可）、`BEGIN; DROP TABLE ...; ROLLBACK;` 这类事务性 DDL 成立；代价是更新频繁的表会膨胀，长事务会拖住 xmin 使死元组清不掉，索引也跟着膨胀。
+- InnoDB 把旧版本放在 undo log 里，由 purge 线程回收。好处是表本身不因更新而膨胀；代价是长事务会撑大 history list，回滚大事务要等 undo 回放，DDL 也无法回滚（8.0 的原子 DDL 解决的是"崩溃后不留半截"，不是"能撤销"）。
+
+锁行为上还有一处常被忽略的差异：InnoDB 在 `REPEATABLE READ` 下对范围条件加 next-key 锁（记录锁 + 间隙锁），并发写同一区间容易死锁；PG 没有间隙锁，靠"更新冲突时后到者报错重试"来保证可串行化，不会因为间隙互相卡住，但在高并发点更新同一行时更容易出现序列化失败。两种模型的失败模式不同，压测时看到的报错文本也不同。
 
 **复制与高可用**：MySQL 的 binlog 复制生态极其成熟，主从、双主、MGR、各类中间件方案丰富，运维工具链完善。PG 的流复制同样可靠，配合 Patroni、pgBouncer 等工具可以构建高可用集群，但生态复杂度较高。
 
-**全文检索与 GIS**：PG 内置全文检索，配合扩展可做中文分词；PostGIS 是 GIS 领域的事实标准。MySQL 的全文检索功能较弱，GIS 支持也远不如 PostGIS。
+**全文检索与 GIS**：PG 内置 `tsvector` 全文检索，配合 `pg_jieba`、`zhparser` 等扩展可做中文分词；PostGIS 是 GIS 领域的事实标准，函数覆盖面其他开源库难比。MySQL 这一侧并非没有：InnoDB 全文索引自 5.6 起就有，5.7 加的 ngram 解析器能处理中日韩（不需要按空格分词），8.0 的空间索引支持 SRID 与 `ST_Contains` 等常用判断，做"附近的门店"这类需求够用。差距在于复杂几何运算与坐标系转换——那部分 PostGIS 是另一个量级。
 
-| 维度 | MySQL (8.0) | PostgreSQL (16) |
+下表按 2026 年初的两个长期支持版本横向对照（MySQL 8.4 LTS / PostgreSQL 17）。小版本行为差异很大，具体特性以官方文档为准。
+
+| 维度 | MySQL 8.4 LTS | PostgreSQL 17 |
 | --- | --- | --- |
-| 数据模型 | 关系型为主，JSON 支持有限 | 关系 + JSONB + 数组 + 丰富类型 |
-| 扩展能力 | 较弱 | 极强（PostGIS 等） |
-| 全文检索 | 基础 | 内置 + 扩展，强大 |
+| 数据模型 | 关系型为主；JSON 走二进制格式，索引需绑定具体路径 | 关系 + JSONB + 数组 + 范围/复合/自定义类型 |
+| JSON 索引 | 函数索引（8.0.13+）、多值索引（8.0.17+），需绑定路径 | GIN 支持整棵子树包含判断，另有表达式索引 |
+| 扩展能力 | 有限，多靠外部组件补齐 | 极强（PostGIS、TimescaleDB 等） |
+| 全文检索 | InnoDB 全文索引 + ngram 中文分词 | 内置 tsvector + 第三方中文分词扩展 |
+| 旧版本存储 | undo log，表不膨胀但 history list 会涨 | 堆表内保留，需 VACUUM，长事务致膨胀 |
+| DDL | 原子 DDL（崩溃安全），不可回滚 | 事务性 DDL，可随事务回滚 |
 | 复制生态 | 极成熟，工具丰富 | 成熟，但更复杂 |
 | 运维门槛 | 较低，普及度高 | 较高，专业人才相对少 |
 | 典型场景 | Web OLTP、互联网业务 | 复杂查询、GIS、分析混合 |

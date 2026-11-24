@@ -16,15 +16,13 @@ Nginx 的反向代理配置几乎每个后端服务都会写，但很多人的�
 
 ## location 匹配优先级：不是谁在前谁说了算
 
-location 的匹配有明确优先级，和书写顺序无关：
+location 的匹配和书写顺序基本无关，它更像三步判定，而不是一张优先级表：
 
-1. `=` 精确匹配（最高）
-2. `^~` 前缀匹配，命中后不再检查正则
-3. `~` 区分大小写的正则、`~*` 不区分大小写正则
-4. 普通前缀匹配（无修饰符）
-5. `/` 通用匹配（最低）
+1. 先找 `=` 精确匹配，命中就直接返回。
+2. 再找**最长**的前缀匹配（普通前缀和 `^~` 一起比长度）。如果这个最长前缀带 `^~`，直接采用它，不再看正则。
+3. 否则按配置里的书写顺序逐个试正则，第一个命中的就用；全都不命中，才回到第 2 步记下的最长前缀。
 
-容易踩的坑是：写了 `location /api {}` 和 `location ~ \.php$ {}`，以为静态资源走前者、PHP 走后者，结果 `/api/user.php` 被正则截走。记住"正则优先于普通前缀，除非加 `^~`"这条铁律，就能解释大多数"路由不按预期走"的问题。
+容易踩的坑是：写了 `location /api {}` 和 `location ~ \.php$ {}`，以为静态资源走前者、PHP 走后者，结果 `/api/user.php` 被正则截走。记住这条：**正则优先于普通前缀，唯一的例外是最长前缀带 `^~`**。注意是"最长前缀"带 `^~` 才算例外——`location ^~ /static/` 配上另一条更长的 `location /static/img/`，长的那条不带 `^~`，正则仍然有机会把请求截走。
 
 ## 透传真实 IP：X-Real-IP 与 X-Forwarded-For
 
@@ -54,11 +52,18 @@ upstream backend {
     keepalive 64;                 # 到后端的长连接池
 }
 
+# Connection 头只有两种正确取值，且互斥：普通请求要空、WebSocket 要 upgrade。
+# 用 map 按 $http_upgrade 自动切换，一条配置同时覆盖两种场景。
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      '';
+}
+
 server {
     listen 80;
     server_name example.com;
 
-    # 上传大文件时不缓冲整个请求体到磁盘
+    # 允许的请求体上限
     client_max_body_size 100m;
 
     location / {
@@ -70,17 +75,19 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # WebSocket 升级必需的两个头
+        # WebSocket 升级：Upgrade 原样透传，Connection 由 map 决定
         proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header Connection $connection_upgrade;
 
         # 超时：长连接场景要放宽
         proxy_connect_timeout 10s;
         proxy_send_timeout    300s;
         proxy_read_timeout    300s;
+    }
 
-        # 复用 upstream 长连接时清掉 Connection 头
-        proxy_set_header Connection "";
+    location /api/upload/ {
+        proxy_pass http://backend;
+        proxy_request_buffering off;   # 大文件流式上传，不先整包落盘
     }
 
     location /api/download/ {
@@ -90,11 +97,15 @@ server {
 }
 ```
 
-这里有两个看似矛盾的点：WebSocket 需要 `Connection "upgrade"`，而 upstream keepalive 需要 `Connection ""`。解决方式是把 keepalive 与 WebSocket 分到不同 location，或用 `map` 按 `$http_upgrade` 动态设置 `Connection` 值，避免全局写死。
+WebSocket 需要 `Connection "upgrade"`，upstream keepalive 需要 `Connection ""`——这两个值互斥，写在同一个 location 里必然有一条被覆盖（`proxy_set_header` 同名头后写的那条生效）。正确做法就是上面这个 `map`：`$http_upgrade` 为空时映射成空串，有值时映射成 `upgrade`，一个变量同时满足两种场景。另一种等效做法是把 WebSocket 单独拆到一个 location。
 
 ## 缓冲与超时：看不见的性能开关
 
 `proxy_buffering on`（默认）会让 Nginx 先把后端响应读入缓冲区再发给客户端，这对小响应有利，但会在下载大文件或 SSE 流式推送时引入延迟甚至内存压力。对 streaming 类接口应设 `proxy_buffering off`。
+
+它管的是**响应**方向，别和管**请求**方向的 `proxy_request_buffering` 混了。后者默认也是 on：Nginx 会把客户端上传的请求体整包收完（超过内存阈值就落临时文件）再转给后端。几百 MB 的上传要关掉它，否则同一个文件先在你磁盘上写一遍、再读出来转发，白白多两倍 IO。
+
+顺带说一句，`client_max_body_size` 只负责**限制**请求体大小，跟缓冲策略无关——想让它"不落盘"必须动 `proxy_request_buffering`，这是最常见的误解。
 
 超时三兄弟含义不同：`proxy_connect_timeout` 是建连超时，`proxy_send_timeout` 是两次写操作间隔，`proxy_read_timeout` 是两次读操作间隔。WebSocket 断连多半是 `proxy_read_timeout`（默认 60s）太短，长连接无数据时被掐断，调到 300s 或配合业务心跳即可。
 

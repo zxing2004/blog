@@ -9,7 +9,7 @@ categories: ["后端与架构"]
 
 ## 热点引入：Kimi K3 开源，把 MoE 再次推到台前
 
-2026 年 7 月，月之暗面将 Kimi K3 全量开源，2.8 万亿参数使其成为全球最大开源模型。社区讨论焦点除了其接近闭源旗舰的定性能力，更多落在一个架构事实上：如此体量几乎不可能沿用稠密（dense）结构，MoE（混合专家）几乎是唯一可落地的工程答案。
+2026 年 7 月，月之暗面将 Kimi K3 全量开源，2.8 万亿参数让它在当时已开源的模型里规模居首。社区讨论焦点除了其接近闭源旗舰的定性能力，更多落在一个架构事实上：如此体量几乎不可能沿用稠密（dense）结构，MoE（混合专家）几乎是唯一可落地的工程答案。
 
 这并非孤例：近两年的旗舰模型一旦跨过千亿参数门槛，几乎清一色转向 MoE。原因很朴素——稠密模型每生成一个 token 都要激活全部参数，参数量约等于计算量；而 MoE 让"模型有多大"与"算一次有多贵"解耦。理解它，是读懂当代大模型工程的前提。
 
@@ -27,7 +27,9 @@ MoE 的核心思想是**用多个"专家"子网络替换 Transformer 中的前�
 由此产生两个关键数字：
 
 - **总参数量（total params）**：所有专家参数之和，决定模型"记忆容量"和显存占用。Kimi K3 的 2.8 万亿说的就是这个。
-- **激活参数量（active params）**：单个 token 前向实际经过的参数，决定单步计算量（FLOPs）。以 top-2、共 64 个专家为例，一次只激活约 2/64 的专家参数。
+- **激活参数量（active params）**：单个 token 前向实际经过的参数，决定单步计算量（FLOPs）。
+
+这两个数字的比例常被简化成"top-2、64 个专家，所以只激活 2/64"。这个算法漏了一块：**2/64 只对"专家参数"成立**。注意力层、embedding、router 以及各家模型都会加的共享专家（shared expert）在每个 token 上都是全量激活的，它们不参与稀疏。所以真实激活参数 = 稠密部分 + 专家部分的 k/E。稠密部分占比不小时，实际激活比例会明显高于 2/64。写报告或估算成本时如果直接拿 2/64 乘总参数，会低估一个量级。
 
 稀疏激活有两个直接收益：**计算量与参数量解耦**——总参数可堆到万亿级提升容量，单 token 计算量却仍停留在百亿级稠密模型的水平；**训练效率更高**——同样算力预算下，MoE 能容纳远超稠密模型的参数量。
 
@@ -37,7 +39,11 @@ MoE 的核心思想是**用多个"专家"子网络替换 Transformer 中的前�
 
 当专家数量多到单卡放不下时，就要把专家切分到不同 GPU 上，这就是**专家并行（EP）**。它与张量并行（TP）、流水线并行（PP）并称三维并行，但通信模式截然不同。
 
-EP 中，token 的路由是动态的：每个 token 可能去任意专家，而专家分布在各卡上。因此需要在 **dispatch（分发）** 阶段把 token 按目标专家重排并通过 `all-to-all` 通信送到对应卡，专家计算完后再用一次 `all-to-all` 把结果**聚合（combine）**回来。all-to-all 是 EP 的命脉，也是主要瓶颈：每张卡都要和其他所有卡交换数据，通信量随 `token 数 × hidden 维度 × EP 并行度` 增长。
+EP 中，token 的路由是动态的：每个 token 可能去任意专家，而专家分布在各卡上。因此需要在 **dispatch（分发）** 阶段把 token 按目标专家重排并通过 `all-to-all` 通信送到对应卡，专家计算完后再用一次 `all-to-all` 把结果**聚合（combine）**回来。all-to-all 是 EP 的命脉，也是主要瓶颈。
+
+这里有个必须说清楚的口径问题。all-to-all 的**总**网络流量约等于 `token 数 × top-k × hidden 维度 × 字节数`——每个 token 要送到 k 个专家所在的卡上，所以它正比于 k 和 hidden，**与 EP 并行度无关**。仔细看单卡收发量：`每卡 token 数 × k × d × bytes × (EP-1)/EP`，`(EP-1)/EP` 随 EP 增大迅速趋近 1，也就是说 EP 从 8 涨到 64，单卡要发的数据量几乎不变（大约多 12%）。
+
+那为什么工程上普遍说"EP 越大越难"？难点不在总量，在**拓扑**。EP=8 通常意味着一台 8 卡机器，all-to-all 走 NVLink，是机内交换；EP=64 就要跨 8 台机器，绝大部分流量走 InfiniBand/RoCE，而跨节点链路的单向带宽比 NVLink 低一个数量级，延迟还高。同一份数据量换到更窄更慢的管道上，才是真实瓶颈。所以评估 EP 度时，比"通信量涨没涨"更该看的是"跨节点占比涨了多少"。
 
 工程上 token 在 dispatch 前要按专家 ID 排序、打包成定长块，才能高效 all-to-all；零散小消息会让带宽利用率骤降。这也是 DeepSpeed、Megatron-LM 等框架对 `all-to-all` 做大量优化的原因。
 
@@ -112,6 +118,8 @@ print(y.shape)   # torch.Size([16, 512])
 
 真实系统会把逐专家循环替换成"排序 + 分组 GEMM + all-to-all"融合算子，否则循环本身就是瓶颈。
 
+还有一个细节值得点出：`softmax` 作用在 `topk_val` 上，等于**只对选中的专家做重新归一化**。不同模型的实现并不统一——Switch Transformer / GShard 的原始做法是先对全部 E 个 logits 做 softmax、再取 top-k（被选中项的权重之和小于 1）；DeepSeek 一类实现则明确对 top-k 重新归一化，让权重和为 1。k 小、logits 分散时两者差别不大，但复现别人的推理结果时，这个差异会造成输出不一致。核对实现时先确认训练用的是哪一种，别只抄个 top-k 就完事。
+
 ### 专家容量与 token 丢弃（伪代码）
 
 ```text
@@ -142,19 +150,31 @@ function route_with_capacity(logits, k, capacity_factor):
 
 ## 显存与通信开销的定量分析
 
-**权重显存**：以 BF16（每参数 2 字节）为例，2.8 万亿参数仅权重就需要 `2.8e12 × 2 ≈ 5.6 TB`，必须靠数十张 80GB 级 GPU 分片承载。若量化到 FP8（1 字节）则约 2.8 TB，量化的收益是数量级的。
+**权重显存**：以 BF16（每参数 2 字节）为例，2.8 万亿参数仅权重就需要 `2.8e12 × 2 = 5.6 TB`。按 80 GB 一张卡算，至少要 `5.6 × 1024 / 80 ≈ 72` 张卡才装得下——这还是只算权重、没算激活、KV Cache 和优化器状态（训练时 Adam 的动量与方差还要再加两份额）。量化到 FP8（1 字节）可压到 2.8 TB，卡数减半，所以大模型推理几乎默认上 FP8。
 
-**通信量**：一次 EP all-to-all 的单卡收发量近似 `T × d_model × bytes × (EP-1)/EP`。前向 dispatch 与 combine 各一次，反向再各一次，单步通信量因此成倍放大；EP 从 8 增到 64，跨节点流量也随之猛增。下面这个函数把权重与通信量算在一起：
+**通信量**：按上面的口径，单卡单步收发量约为 `每卡 token 数 × k × d × bytes × (EP-1)/EP`。前向 dispatch、前向 combine、反向 dispatch、反向 combine 共四次，所以单步总通信是单次的 4 倍。下面这个函数把权重与通信量算在一起：
 
 ```python
-def moe_cost(params_b, ep, tokens_per_gpu, hidden, bytes_per_param=2):
-    """估算权重显存(TB)与单步 all-to-all 通信量(MB)"""
-    weight_tb = params_b * 1e9 * bytes_per_param / 1e12
-    comm_mb = tokens_per_gpu * hidden * bytes_per_param * (ep - 1) / ep / 1e6
-    return round(weight_tb, 2), round(4 * comm_mb, 1)  # 前反向共 4 次
+def moe_cost(params_b, ep, tokens_per_gpu, hidden, top_k=2,
+             bytes_per_param=2, dims_per_step=4):
+    """估算权重显存(TB)与单卡单步 all-to-all 收发量(MB)。
 
-print(moe_cost(2800, ep=8, tokens_per_gpu=4096, hidden=4096))
+    dims_per_step: 前向 dispatch/combine + 反向 dispatch/combine = 4 次
+    """
+    weight_tb = params_b * 1e9 * bytes_per_param / 1e12
+    # 每个 token 要发给 top_k 个专家所在卡，跨卡比例 (ep-1)/ep
+    comm_mb = (tokens_per_gpu * top_k * hidden * bytes_per_param
+               * (ep - 1) / ep / 1e6)
+    return round(weight_tb, 2), round(dims_per_step * comm_mb, 1)
+
+# 2.8 万亿参数、每卡 4096 token、hidden=4096、top-2
+print(moe_cost(2800, ep=8,  tokens_per_gpu=4096, hidden=4096))  # (5.6, 234.9)
+print(moe_cost(2800, ep=64, tokens_per_gpu=4096, hidden=4096))  # (5.6, 264.2)
 ```
+
+两个结果值得对照着看：EP 从 8 扩到 64，单卡通信量只从 235 MB 涨到 264 MB，涨幅约 12%——印证了"总量不随 EP 涨"。但如果 EP=8 意味着一台 8 卡机、EP=64 意味着跨 8 台机，这 264 MB 里绝大多数要走跨节点网络，而不再是 NVLink。**同样的字节数，不同的物理链路**，这才是扩 EP 时吞吐掉下来的原因。
+
+顺带说一句这个函数的边界：它只算 token 本身的载荷，不含 all-to-all 的实现开销（分块对齐的 padding、消息头、gather/scatter 的中间缓冲），也不含反向重算。真实测量通常比这个估算高 20%～40%，用来做量级判断可以，做容量规划要留余量。
 
 **激活与 KV Cache**：激活显存随并发和序列长度线性增长，推理时 KV Cache 往往比权重更棘手，是长上下文场景的头号显存挑战。
 
@@ -164,7 +184,7 @@ print(moe_cost(2800, ep=8, tokens_per_gpu=4096, hidden=4096))
 - **优先保证通信与计算重叠**。检查框架的 overlap 开关是否打开；没打开时 all-to-all 是串行阻塞的，GPU 大量空转。
 - **aux loss 权重需谨慎调整**。太小不均衡，太大伤质量；训练中建议监控各专家的 token 占比直方图，出现"专家饥饿"要及时干预。
 - **容量因子留余量**。推理 peak 流量下 token 分布更极端，capacity_factor 过小会大量丢 token，表现为质量突然下降。
-- **top-k 的选择**。k=1 通信最省但质量与均衡性较差；k=2 是常见甜点；更大 k 提升质量但通信与计算翻倍。
+- **top-k 要按成本算，别按感觉调**。k=1 通信与计算最省，但质量与均衡性最差；k=2 是常见的甜点。注意成本是**线性于 k** 的：k 从 2 加到 4，激活参数与 all-to-all 量同步翻倍，不是"稍微多一点"。真要提质量，先看是不是专家粒度或 router 本身的问题。
 - **专家中间结果别在 Python 层循环**。生产环境务必用框架提供的融合 MoE kernel。
 
 ## 小结
