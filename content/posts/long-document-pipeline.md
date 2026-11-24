@@ -1,10 +1,13 @@
 ---
 title: "长文档处理流水线：切片、检索与摘要的工程实践"
+slug: "long-document-pipeline"
 date: 2026-06-22
 draft: false
 description: "从语义分块到层级摘要再到检索增强，拆解一条可落地的长文档处理流水线，并覆盖表格、代码等特殊内容。"
 tags: ["长文档", "RAG", "摘要", "检索"]
 categories: ["后端与架构"]
+aliases:
+  - "/posts/长文档处理流水线切片检索与摘要的工程实践/"
 ---
 
 ## 热点引入：长文档处理真正开始落地

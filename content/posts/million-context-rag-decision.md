@@ -1,10 +1,13 @@
 ---
 title: "百万上下文时代：RAG 还是长上下文？一份工程决策指南"
+slug: "million-context-rag-decision"
 date: 2026-05-08
 draft: false
 description: "当百万 token 上下文成为标配，RAG 是否还有必要？本文从原理、成本、准确性到可追溯性给出一套可落地的工程决策框架。"
 tags: ["RAG", "长上下文", "LLM", "架构"]
 categories: ["后端与架构"]
+aliases:
+  - "/posts/百万上下文时代rag-还是长上下文一份工程决策指南/"
 ---
 
 ## 热点引入：百万上下文成为标配之后

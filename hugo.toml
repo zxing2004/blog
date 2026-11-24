@@ -17,13 +17,18 @@ enableRobotsTXT = true
 [permalinks]
   posts = '/posts/:slug/'
 
+# 分页：每页文章数。
+# 必须写在根级 [pagination] 下，模板里的 .Paginate 才读得到。
+# 写进 [params] 是无效配置（Hugo 不认识），会静默退回默认 pagerSize=10。
+# Hugo 0.128 起推荐 pagerSize；旧的根级 paginate 已废弃。
+[pagination]
+  pagerSize = 6
+
 # 站点参数（模板中通过 .Site.Params.xxx 调用）
 [params]
   description   = '记录技术学习、工程实践与思考的个人博客。'
   author        = '米喽'
   authorEmail   = 'ricead@qq.com'
-  # 首页每页显示文章数
-  paginate      = 6
   # 文章列表摘要字数
   summaryLength = 120
   # 是否显示文章目录（TOC）

@@ -1,10 +1,13 @@
 ---
 title: "拆解 Function Calling：从工具 schema 到多步 Agent 编排"
+slug: "function-calling-agent-orchestration"
 date: 2026-05-15
 draft: false
 description: "从一个工具定义到多步 Agent 循环，完整拆解 Function Calling 的链路、状态机设计与工程落地要点。"
 tags: ["Agent", "Function Calling", "工具调用", "LLM"]
 categories: ["后端与架构"]
+aliases:
+  - "/posts/拆解-function-calling从工具-schema-到多步-agent-编排/"
 ---
 
 ## 热点引入：从"能聊天"到"能干活"

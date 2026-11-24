@@ -1,10 +1,13 @@
 ---
 title: "RESTful API 设计：容易被忽略的细节"
+slug: "restful-api-design"
 date: 2026-03-10
 draft: false
 description: "讨论 REST API 设计中常见但容易被忽视的问题，包括资源命名、状态码与版本管理。"
 tags: ["API", "后端", "架构"]
 categories: ["后端与架构"]
+aliases:
+  - "/posts/restful-api-设计容易被忽略的细节/"
 ---
 
 ## 资源命名使用名词复数

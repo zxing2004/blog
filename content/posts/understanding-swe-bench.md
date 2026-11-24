@@ -1,10 +1,13 @@
 ---
 title: "写代码这件事被量化之后：读懂 SWE-bench 与编码 Agent 评测"
+slug: "understanding-swe-bench"
 date: 2026-06-12
 draft: false
 description: "SWE-bench 分数屡创新高，但这些数字到底意味着什么？本文拆解评测构造、变体差异与榜单陷阱，并给出正确看待 benchmark 的方法论。"
 tags: ["SWE-bench", "评测", "编码Agent", "基准"]
 categories: ["工具与效率"]
+aliases:
+  - "/posts/写代码这件事被量化之后读懂-swe-bench-与编码-agent-评测/"
 ---
 
 ## 热点引入：编码能力被量化到新高度

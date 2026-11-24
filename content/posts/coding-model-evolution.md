@@ -1,10 +1,13 @@
 ---
 title: "编码模型的下一站：从补全到自主 Agent 的架构演进"
+slug: "coding-model-evolution"
 date: 2026-11-17
 draft: false
 description: "编码模型正从单行补全走向自主 Agent。本文梳理补全、对话编辑、Agent 三阶段架构，讲透 FIM、上下文构建与 IDE 集成，并给出 tree-sitter 实操。"
 tags: ["编码模型", "Copilot", "Agent", "IDE"]
 categories: ["工具与效率"]
+aliases:
+  - "/posts/编码模型的下一站从补全到自主-agent-的架构演进/"
 ---
 
 ## 热点引入：编码模型的重心迁移

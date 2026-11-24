@@ -1,10 +1,13 @@
 ---
 title: "端侧智能落地：ONNX Runtime 与模型量化的工程路径"
+slug: "on-device-inference"
 date: 2026-06-30
 draft: false
 description: "端侧推理受限于内存、算力与功耗。本文讲清量化原理，并用 ONNX Runtime 与 WebGPU 给出可运行的落地代码路径。"
 tags: ["端侧推理", "ONNX", "量化", "WebGPU"]
 categories: ["工具与效率"]
+aliases:
+  - "/posts/端侧智能落地onnx-runtime-与模型量化的工程路径/"
 ---
 
 ## 热点引入：智能正在从云端走向设备

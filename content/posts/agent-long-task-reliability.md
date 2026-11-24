@@ -1,10 +1,13 @@
 ---
 title: "Agent 长任务的可靠性：检查点、幂等与断点续跑"
+slug: "agent-long-task-reliability"
 date: 2026-09-28
 draft: false
 description: "长程异步 Agent 的失败是常态而非例外。本文讲透检查点、幂等与断点续跑三大机制，并给出可直接落地的 Python 实现与工程避坑清单。"
 tags: ["Agent", "可靠性", "幂等", "断点续跑"]
 categories: ["后端与架构"]
+aliases:
+  - "/posts/agent-长任务的可靠性检查点幂等与断点续跑/"
 ---
 
 ## 热点引入：当 Agent 开始「上长班」

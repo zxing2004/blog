@@ -1,10 +1,13 @@
 ---
 title: "Git 实用工作流：从提交规范到分支管理"
+slug: "git-workflow"
 date: 2026-02-20
 draft: false
 description: "整理一套个人与团队都适用的 Git 工作流，涵盖提交信息规范、分支策略和常用技巧。"
 tags: ["Git", "工程实践", "协作"]
 categories: ["工具与效率"]
+aliases:
+  - "/posts/git-实用工作流从提交规范到分支管理/"
 ---
 
 ## 提交信息规范

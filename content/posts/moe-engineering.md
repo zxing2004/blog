@@ -1,10 +1,13 @@
 ---
 title: "万亿参数 MoE 的三个工程支点：专家并行、负载均衡与通信"
+slug: "moe-engineering"
 date: 2026-07-08
 draft: false
 description: "以 Kimi K3 全量开源为契机，讲透 MoE 稀疏激活的核心原理，并逐一拆解支撑万亿参数模型落地的三个工程支点：专家并行、负载均衡与通信优化。"
 tags: ["MoE", "专家并行", "大模型", "分布式"]
 categories: ["后端与架构"]
+aliases:
+  - "/posts/万亿参数-moe-的三个工程支点专家并行负载均衡与通信/"
 ---
 
 ## 热点引入：Kimi K3 开源，把 MoE 再次推到台前

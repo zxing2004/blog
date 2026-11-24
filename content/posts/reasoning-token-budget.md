@@ -1,10 +1,13 @@
 ---
 title: "推理模型的\"思考预算\"：Reasoning Token 的成本控制"
+slug: "reasoning-token-budget"
 date: 2026-05-26
 draft: false
 description: "推理模型隐藏的 reasoning token 正在悄悄抬高成本与延迟。本文讲清它的计费逻辑与预算控制手段，并给出任务分级与监控方案。"
 tags: ["推理模型", "成本优化", "Reasoning", "LLM"]
 categories: ["工具与效率"]
+aliases:
+  - "/posts/推理模型的思考预算reasoning-token-的成本控制/"
 ---
 
 ## 热点引入：推理模型成为主流之后

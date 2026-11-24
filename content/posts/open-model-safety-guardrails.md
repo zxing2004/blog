@@ -1,10 +1,13 @@
 ---
 title: "开源模型的安全护栏：能力分级、Red Teaming 与许可证"
+slug: "open-model-safety-guardrails"
 date: 2026-10-10
 draft: false
 description: "开源权重一旦发布便不可撤回，且可被微调绕过对齐。本文讲清能力分级与红队评测方法，给出可运行的护栏代码，并梳理企业采用时的安全与合规清单。"
 tags: ["模型安全", "Red Teaming", "合规", "开源"]
 categories: ["后端与架构"]
+aliases:
+  - "/posts/开源模型的安全护栏能力分级red-teaming-与许可证/"
 ---
 
 ## 热点引入：开源权重的「双刃剑」被摆上台面

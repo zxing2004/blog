@@ -1,10 +1,13 @@
 ---
 title: "INT4 量化推理实战：精度补偿与吞吐提升的取舍"
+slug: "int4-quantization-inference"
 date: 2026-11-05
 draft: false
 description: "INT4 全量化正在成为推理加速的主流选择。本文讲透线性量化原理、W4A4 的难度与精度补偿手段，并给出 PyTorch 量化实现和 vLLM/llama.cpp 部署命令。"
 tags: ["INT4", "量化", "推理优化", "吞吐"]
 categories: ["后端与架构"]
+aliases:
+  - "/posts/int4-量化推理实战精度补偿与吞吐提升的取舍/"
 ---
 
 ## 热点引入：低比特量化走到台前

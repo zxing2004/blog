@@ -1,10 +1,13 @@
 ---
 title: "用 Hugo 搭建一个零成本的技术博客"
+slug: "hello-hugo"
 date: 2026-01-15
 draft: false
 description: "从零开始，用 Hugo + GitHub Pages 搭建一个完全免费、自动部署的个人技术博客。"
 tags: ["Hugo", "GitHub Pages", "静态站点"]
 categories: ["工具与效率"]
+aliases:
+  - "/posts/用-hugo-搭建一个零成本的技术博客/"
 ---
 
 ## 为什么选择 Hugo

@@ -1,10 +1,13 @@
 ---
 title: "Markdown 写作速查与进阶技巧"
+slug: "markdown-cheatsheet"
 date: 2026-04-05
 draft: false
 description: "一份面向技术写作的 Markdown 速查表，涵盖标题、代码块、表格、脚注等常用语法。"
 tags: ["Markdown", "写作", "Hugo"]
 categories: ["工具与效率"]
+aliases:
+  - "/posts/markdown-写作速查与进阶技巧/"
 ---
 
 ## 标题

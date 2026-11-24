@@ -1,10 +1,13 @@
 ---
 title: "让 AI 写出能跑的前端：上下文、约束与可验证性"
+slug: "ai-frontend-code-generation"
 date: 2026-07-24
 draft: false
 description: "模型的前端编码能力再强，缺少上下文与约束也只会产出「看起来对」的页面。本文用上下文、约束、可验证性三要素，搭一套让 AI 稳定产出可用前端代码的工程闭环。"
 tags: ["AI编程", "前端", "Prompt", "可验证性"]
 categories: ["前端与体验"]
+aliases:
+  - "/posts/让-ai-写出能跑的前端上下文约束与可验证性/"
 ---
 
 ## 热点引入：前端代码竞技场登顶之后

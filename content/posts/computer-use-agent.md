@@ -1,10 +1,13 @@
 ---
 title: "Computer Use Agent 的工程难点：屏幕理解与动作空间"
+slug: "computer-use-agent"
 date: 2026-10-16
 draft: false
 description: "GUI Agent 从演示走向生产，难在屏幕理解、动作空间设计与容错可观测性。本文拆解 CUA 闭环，并用 Playwright 给出可运行的最小实现与循环检测方案。"
 tags: ["Computer Use", "GUI Agent", "Agent", "自动化"]
 categories: ["工具与效率"]
+aliases:
+  - "/posts/computer-use-agent-的工程难点屏幕理解与动作空间/"
 ---
 
 ## 热点引入：从「看懂屏幕」到「动手操作」

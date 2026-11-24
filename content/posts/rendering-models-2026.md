@@ -1,10 +1,13 @@
 ---
 title: "2026 前端选型的底层逻辑：五种渲染模型对比"
+slug: "rendering-models-2026"
 date: 2026-10-23
 draft: false
 description: "2026 年前端选型的变量已从框架之争变为渲染模型之争。但虚拟 DOM、Signals、Resumability、Islands 与 HTML-over-the-wire 并不在同一层，混着比会得出错误结论。本文先把它们按交付层与更新层归位，再逐层对比并给出决策建议。"
 tags: ["前端架构", "渲染模型", "React", "Vue"]
 categories: ["前端与体验"]
+aliases:
+  - "/posts/2026-前端选型的底层逻辑五种渲染模型对比/"
 ---
 
 ## 热点引入：框架之争，正在被渲染模型之争取代

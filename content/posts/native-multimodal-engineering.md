@@ -1,10 +1,13 @@
 ---
 title: "原生多模态的工程实现：从编码器对齐到统一 token 空间"
+slug: "native-multimodal-engineering"
 date: 2026-09-19
 draft: false
 description: "原生多模态已成旗舰标配，但它与『图像编码器 + 投影层』的拼接方案究竟差在哪？本文拆解 ViT patch 化、模态对齐、视频时序编码等关键实现，并给出可运行的代码骨架与自研/API 决策建议。"
 tags: ["多模态", "视觉语言模型", "对齐", "架构"]
 categories: ["后端与架构"]
+aliases:
+  - "/posts/原生多模态的工程实现从编码器对齐到统一-token-空间/"
 ---
 
 ## 热点引入：原生多模态成为旗舰标配
