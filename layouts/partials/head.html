@@ -12,6 +12,11 @@
   {{- /* 作者 */ -}}
   <meta name="author" content="{{ .Site.Params.author }}">
 
+  {{- /* 规范链接：只给内容页加。列表/分页页的 .Permalink 一律返回列表首页，
+         强行输出会把 /page/2/ 全指到第一页，反而制造更多重复内容问题，
+         所以这里用 .IsPage 限定范围。slug 变更后靠它把权重归到新地址。 */ -}}
+  {{ if .IsPage }}<link rel="canonical" href="{{ .Permalink }}">{{ end }}
+
   {{- /* RSS / JSON Feed */ -}}
   {{ with .OutputFormats.Get "rss" -}}
     <link rel="alternate" type="application/rss+xml" title="{{ $.Site.Title }}" href="{{ .RelPermalink }}">
